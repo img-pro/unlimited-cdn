@@ -1,363 +1,243 @@
-# Image CDN Worker for WordPress
+# Bandwidth Saver Worker
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-orange.svg)](https://workers.cloudflare.com/)
 
-Cloudflare Worker that caches WordPress images in R2 and serves them globally via CDN.
+Cloudflare Worker that caches and serves WordPress images globally via CDN.
 
-Part of the [Image CDN by ImgPro](https://github.com/img-pro/wp-image-cdn) WordPress plugin.
+Part of the [Bandwidth Saver](https://wordpress.org/plugins/bandwidth-saver/) WordPress plugin.
 
 ## Overview
 
-This worker acts as a caching proxy for WordPress images:
-1. Fetches images from WordPress origin servers
-2. Stores them in Cloudflare R2
-3. Redirects to R2 public CDN URL
-4. Future requests bypass the worker entirely (served from R2 CDN)
+This worker acts as a caching CDN for WordPress images:
 
-**Result:** 99% of traffic served directly from R2 with zero worker invocations.
+1. First request: Fetches image from WordPress, stores in R2, returns image
+2. Future requests: Serves directly from R2 cache with long cache headers
+
+**Single-domain architecture:** The worker IS your CDN. No separate R2 public bucket needed.
 
 ## Features
 
-- ✅ **Origin Fetch** - Pull images from any WordPress site
-- ✅ **R2 Caching** - Permanent storage in Cloudflare R2
-- ✅ **Public CDN** - Direct serving via R2's public bucket
-- ✅ **Smart Routing** - First request caches, subsequent requests bypass worker
-- ✅ **CORS Support** - Configurable cross-origin resource sharing
-- ✅ **Image Validation** - Verify content types and file sizes
-- ✅ **Hotlink Protection** - Optional domain whitelist
-- ✅ **Error Handling** - Graceful fallbacks for failed requests
+- **Origin Fetch** - Pull images from any WordPress site
+- **R2 Caching** - Permanent storage in Cloudflare R2
+- **Direct Serving** - Images served through the worker with year-long cache headers
+- **CORS Support** - Configurable cross-origin resource sharing
+- **Image Validation** - Verify content types and file sizes
+- **Hotlink Protection** - Optional domain whitelist
+- **Cache Invalidation** - DELETE endpoint to purge cached images
+- **Debug Viewer** - Visual debugging with `?view=1` parameter
 
 ## How It Works
 
 ```
-First Request:
-Browser → worker.yourdomain.com → WordPress Origin
+Request Flow:
+Browser → cdn.yoursite.com/example.com/wp-content/uploads/photo.jpg
               ↓
-          R2 Storage
+         [Worker]
               ↓
-     Redirect to cdn.yourdomain.com
-
-Subsequent Requests:
-Browser → cdn.yourdomain.com (Direct from R2)
+    ┌─────────┴─────────┐
+    │                   │
+Cache HIT           Cache MISS
+    │                   │
+    ↓                   ↓
+Return from R2    Fetch from origin
+                        ↓
+                  Store in R2
+                        ↓
+                  Return image
 ```
 
-**Key Point:** After the first request, images are served directly from R2's CDN. The worker is never invoked again for that image.
+Both cache hits and misses return images with `Cache-Control: public, max-age=31536000, immutable`.
 
 ## URL Structure
 
-### Worker URL (First Request Only)
 ```
-https://worker.yourdomain.com/{origin-domain}/{path}
-```
-
-### CDN URL (Cached, Direct Access)
-```
-https://cdn.yourdomain.com/{origin-domain}/{path}
+https://cdn.yoursite.com/{origin-domain}/{path-to-image}
 ```
 
-### Example Flow
-
-**Original WordPress Image:**
+**Example:**
 ```
-https://example.com/wp-content/uploads/2024/01/photo.jpg
-```
-
-**First Request (via Worker):**
-```
-https://worker.yourdomain.com/example.com/wp-content/uploads/2024/01/photo.jpg
-→ Fetches from origin
-→ Stores in R2
-→ Redirects to CDN URL
+Original:  https://example.com/wp-content/uploads/2024/photo.jpg
+CDN URL:   https://cdn.yoursite.com/example.com/wp-content/uploads/2024/photo.jpg
 ```
 
-**Future Requests (Direct CDN):**
-```
-https://cdn.yourdomain.com/example.com/wp-content/uploads/2024/01/photo.jpg
-→ Served instantly from R2 (no worker invocation)
-```
+## Quick Start
 
-## Prerequisites
+### Prerequisites
 
-- Cloudflare account
-- Node.js 18+ installed
-- Wrangler CLI (`npm install -g wrangler`)
-- Domain on Cloudflare (for custom domains)
+- Cloudflare account with a domain
+- Node.js 18+
+- Wrangler CLI: `npm install -g wrangler`
 
-## Installation
-
-### 1. Clone Repository
+### Setup (15 minutes)
 
 ```bash
-git clone https://github.com/img-pro/wp-image-cdn-worker.git
-cd wp-image-cdn-worker
-```
-
-### 2. Install Dependencies
-
-```bash
+# 1. Clone and install
+git clone https://github.com/img-pro/bandwidth-saver-worker.git
+cd bandwidth-saver-worker
 npm install
-```
 
-### 3. Create R2 Bucket
-
-```bash
-# Login to Cloudflare
+# 2. Login to Cloudflare
 wrangler login
 
-# Create R2 bucket
+# 3. Create R2 bucket
 wrangler r2 bucket create imgpro-cdn
 
-# Enable public access via Cloudflare Dashboard:
-# R2 → imgpro-cdn → Settings → Public Access → Enable
-# Custom Domain → cdn.yourdomain.com
-```
-
-### 4. Configure Worker
-
-Copy example configuration:
-```bash
+# 4. Configure
 cp wrangler.toml.example wrangler.toml
-```
+# Edit wrangler.toml with your domain and bucket name
 
-Edit `wrangler.toml`:
-```toml
-name = "image-cdn-worker"
-main = "src/index.ts"
-compatibility_date = "2024-01-01"
-
-# R2 Bucket Binding
-[[r2_buckets]]
-binding = "R2_BUCKET"
-bucket_name = "imgpro-cdn"
-
-# Environment Variables
-[vars]
-CDN_DOMAIN = "cdn.yourdomain.com"    # Your R2 public domain
-ALLOWED_ORIGINS = "*"                 # Or comma-separated domains
-MAX_FILE_SIZE = "50MB"               # Maximum image size
-FETCH_TIMEOUT = "30000"              # 30 seconds
-DEBUG = "false"                      # Enable debug logging
-```
-
-### 5. Deploy Worker
-
-**Test Deployment:**
-```bash
+# 5. Deploy
 npm run deploy
 ```
 
-**Add Custom Domain:**
-```
-Cloudflare Dashboard → Workers & Pages → image-cdn-worker
-→ Settings → Triggers → Add Custom Domain
-→ worker.yourdomain.com
-```
+### Add Custom Domain
+
+1. Go to **Cloudflare Dashboard → Workers & Pages → your-worker**
+2. Click **Settings → Domains & Routes**
+3. Click **Add → Custom Domain**
+4. Enter your CDN domain (e.g., `cdn.yoursite.com`)
+5. Cloudflare automatically configures DNS and SSL
 
 ## Configuration
 
+### wrangler.toml
+
+```toml
+name = "bandwidth-saver-worker"
+main = "src/index.ts"
+compatibility_date = "2025-01-15"
+compatibility_flags = ["nodejs_compat"]
+
+# Your CDN domain
+routes = [
+  { pattern = "cdn.yoursite.com/*", zone_name = "yoursite.com" }
+]
+
+# R2 bucket (keep private - worker handles access)
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "imgpro-cdn"
+
+[vars]
+ALLOWED_ORIGINS = "*"           # Or "site1.com,site2.com"
+MAX_FILE_SIZE = "50MB"          # Maximum image size
+FETCH_TIMEOUT = "30000"         # Origin timeout (ms)
+DEBUG = "false"                 # Enable console logging
+```
+
 ### Environment Variables
 
-| Variable | Description | Default | Example |
-|----------|-------------|---------|---------|
-| `CDN_DOMAIN` | R2 public bucket domain | Required | `cdn.yourdomain.com` |
-| `ALLOWED_ORIGINS` | CORS allowed origins | `"*"` | `"example.com,site.com"` |
-| `MAX_FILE_SIZE` | Maximum file size | `"50MB"` | `"100MB"` |
-| `FETCH_TIMEOUT` | Origin fetch timeout (ms) | `"30000"` | `"60000"` |
-| `DEBUG` | Enable debug logging | `"false"` | `"true"` |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ALLOWED_ORIGINS` | Allowed origin domains (`*` or comma-separated) | `*` |
+| `MAX_FILE_SIZE` | Max file size (`10MB`, `100MB`, etc.) | `50MB` |
+| `FETCH_TIMEOUT` | Origin fetch timeout in ms | `30000` |
+| `DEBUG` | Enable debug logging | `false` |
 
-### R2 Bucket Setup
+## Endpoints
 
-1. **Create Bucket:**
-   ```bash
-   wrangler r2 bucket create imgpro-cdn
-   ```
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/{domain}/{path}` | GET | Fetch/serve image |
+| `/{domain}/{path}` | HEAD | Check if cached |
+| `/{domain}/{path}` | DELETE | Invalidate cache |
+| `/{domain}/{path}?view=1` | GET | Debug viewer (HTML) |
+| `/health` | GET | Health check |
+| `/stats` | GET | Cache statistics |
 
-2. **Enable Public Access:**
-   - Cloudflare Dashboard → R2 → imgpro-cdn
-   - Settings → Public Access → Allow
-   - Add Custom Domain: `cdn.yourdomain.com`
+## WordPress Integration
 
-3. **Verify DNS:**
-   ```bash
-   dig cdn.yourdomain.com
-   # Should point to Cloudflare R2
-   ```
+This worker is designed for the [Bandwidth Saver](https://wordpress.org/plugins/bandwidth-saver/) plugin.
 
-## Development
-
-### Local Development
-
-```bash
-npm run dev
-```
-
-Worker available at `http://localhost:8787`
-
-### Test Locally
-
-```bash
-# Test image fetch
-curl http://localhost:8787/example.com/wp-content/uploads/image.jpg
-```
-
-### View Logs
-
-```bash
-wrangler tail
-```
-
-### TypeScript
-
-Worker is written in TypeScript for type safety:
-
-```typescript
-// src/types.ts
-export interface Env {
-  R2_BUCKET: R2Bucket;
-  CDN_DOMAIN: string;
-  ALLOWED_ORIGINS?: string;
-  MAX_FILE_SIZE?: string;
-  FETCH_TIMEOUT?: string;
-  DEBUG?: string;
-}
-```
-
-## WordPress Plugin Integration
-
-This worker is designed to work with the [Image CDN WordPress plugin](https://github.com/img-pro/wp-image-cdn).
-
-**Plugin automatically:**
-- Rewrites image URLs to use your CDN domain
-- Adds fallback to worker domain on CDN failures
+**The plugin automatically:**
+- Rewrites image URLs to your CDN domain
+- Falls back to origin if CDN fails
 - Handles srcset and responsive images
-- Provides debug mode for troubleshooting
 
-**Manual URL Rewriting (if not using plugin):**
+**Manual integration (without plugin):**
 ```php
-// Replace WordPress image URLs
-function my_cdn_url($url) {
-    if (preg_match('/\.(jpg|jpeg|png|gif|webp)$/i', $url)) {
+function cdn_rewrite_url($url) {
+    if (preg_match('/\.(jpg|jpeg|png|gif|webp|avif|svg)$/i', $url)) {
         $parsed = parse_url($url);
         $path = $parsed['host'] . $parsed['path'];
-        return 'https://cdn.yourdomain.com/' . $path;
+        return 'https://cdn.yoursite.com/' . $path;
     }
     return $url;
 }
-add_filter('wp_get_attachment_url', 'my_cdn_url');
+add_filter('wp_get_attachment_url', 'cdn_rewrite_url');
 ```
 
-## Performance
+## Development
 
-**Metrics:**
-- **Worker invocations:** ~1% of requests (cache misses only)
-- **R2 direct access:** ~99% of requests
-- **Cache miss latency:** 200-400ms (first request)
-- **Cache hit latency:** 20-40ms (direct from R2)
-- **Global coverage:** 300+ edge locations
+```bash
+# Local development
+npm run dev
+# Worker runs at http://localhost:8787
 
-## Cost Optimization
+# View logs
+wrangler tail
 
-**Cloudflare Free Tier:**
-- R2 Storage: 10 GB free
-- R2 Operations: 1M reads/month free
-- Worker Requests: 100k/day free
+# Deploy to production
+npm run deploy
+```
+
+## Cost Estimate
+
+**Cloudflare Free Tier includes:**
+- R2: 10 GB storage, 1M reads/month
+- Workers: 100k requests/day
 - Zero egress fees
 
-**Typical Costs:**
+**Typical costs:**
 - Small site (100k views/month): **$0/month**
 - Medium site (500k views/month): **$0-2/month**
-- Large site (3M views/month): **$0.68/month**
-
-## Security
-
-**Built-in Protections:**
-- Image content-type validation
-- File size limits
-- Optional domain whitelist
-- CORS configuration
-- Error handling
-
-**Recommended Settings:**
-```toml
-[vars]
-ALLOWED_ORIGINS = "yourdomain.com,www.yourdomain.com"
-MAX_FILE_SIZE = "50MB"
-```
-
-## Troubleshooting
-
-### Images Not Caching
-
-**Check:**
-1. R2 bucket exists: `wrangler r2 bucket list`
-2. Public access enabled (Dashboard → R2 → Settings)
-3. Custom domain configured
-4. DNS propagated: `dig cdn.yourdomain.com`
-
-### CORS Errors
-
-**Fix:**
-```toml
-[vars]
-ALLOWED_ORIGINS = "*"  # Or specific domains
-```
-
-### Worker Errors
-
-**View logs:**
-```bash
-wrangler tail
-```
-
-**Enable debug mode:**
-```toml
-[vars]
-DEBUG = "true"
-```
+- Large site (3M views/month): **<$1/month**
 
 ## Project Structure
 
 ```
-wp-image-cdn-worker/
+bandwidth-saver-worker/
 ├── src/
-│   ├── index.ts          # Main worker entry
-│   ├── cache.ts          # R2 caching logic
-│   ├── origin.ts         # Origin fetch
-│   ├── validation.ts     # Image validation
-│   ├── analytics.ts      # Analytics helpers
-│   ├── utils.ts          # Utilities
-│   ├── viewer.ts         # Debug viewer
-│   └── types.ts          # TypeScript types
-├── wrangler.toml.example # Configuration template
-├── tsconfig.json         # TypeScript config
-├── package.json          # Dependencies
-└── README.md            # This file
+│   ├── index.ts        # Main worker entry
+│   ├── cache.ts        # R2 caching logic
+│   ├── origin.ts       # Origin fetch
+│   ├── validation.ts   # URL parsing & validation
+│   ├── analytics.ts    # Stats endpoint
+│   ├── utils.ts        # Helpers
+│   ├── viewer.ts       # Debug HTML viewer
+│   └── types.ts        # TypeScript types
+├── wrangler.toml.example
+├── package.json
+└── README.md
 ```
 
-## Contributing
+## Troubleshooting
 
-Contributions welcome! Please:
+### Images not caching
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+1. Check R2 bucket exists: `wrangler r2 bucket list`
+2. Verify bucket name in wrangler.toml matches
+3. Check worker logs: `wrangler tail`
+
+### CORS errors
+
+Set `ALLOWED_ORIGINS = "*"` or list your domains.
+
+### Origin timeouts
+
+Increase `FETCH_TIMEOUT` (default 30000ms).
+
+### Debug a specific image
+
+Add `?view=1` to any image URL to see the debug viewer with workflow logs.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE)
 
-## Related Projects
+## Links
 
-- **WordPress Plugin:** [wp-image-cdn](https://github.com/img-pro/wp-image-cdn)
-
-## Support
-
-- **GitHub Issues:** https://github.com/img-pro/wp-image-cdn-worker/issues
-- **WordPress Support:** https://wordpress.org/support/plugin/imgpro/
-
----
-
-**Built with ❤️ by [ImgPro](https://img.pro)**
+- **WordPress Plugin:** [wordpress.org/plugins/bandwidth-saver](https://wordpress.org/plugins/bandwidth-saver/)
+- **Plugin Source:** [github.com/img-pro/bandwidth-saver](https://github.com/img-pro/bandwidth-saver)
+- **Issues:** [github.com/img-pro/bandwidth-saver-worker/issues](https://github.com/img-pro/bandwidth-saver-worker/issues)
