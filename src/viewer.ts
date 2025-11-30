@@ -287,7 +287,7 @@ export function createHtmlViewer(options: HtmlViewerOptions): Response {
     <header>
       <div>
         <h1>CDN Image Viewer</h1>
-        <div class="subtitle">ImgPro CDN Worker · Version 1.0.4</div>
+        <div class="subtitle">ImgPro CDN Worker · Version 1.2.0</div>
       </div>
       <button class="delete-btn" id="deleteBtn" onclick="deleteImage()">Delete Image</button>
     </header>

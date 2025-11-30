@@ -5,13 +5,19 @@
  * - Cache hit: Returns image from R2 with long cache headers
  * - Cache miss: Fetches from origin, stores in R2, returns image
  *
+ * Origin validation:
+ * - Allowed origins: served via CDN (cached in R2)
+ * - Non-allowed origins: redirected to original URL (no caching, no blocking)
+ * - Blocked origins: redirected to original URL
+ * - Invalid domains (IPs, internal): rejected with 400
+ *
  * No separate R2 public bucket domain needed - the worker IS the CDN.
  *
- * @version 1.1.0
+ * @version 1.2.0
  */
 
 import type { Env, LogEntry } from './types';
-import { parseUrl, isAllowedOrigin, isImageContentType } from './validation';
+import { parseUrl, validateOrigin, isImageContentType, validateUrlDomain } from './validation';
 import { fetchFromOrigin, fetchImageData } from './origin';
 import {
   getFromCache,
@@ -23,6 +29,8 @@ import {
 import { createHtmlViewer } from './viewer';
 import { createStatsResponse, createLogger } from './analytics';
 import { errorResponse, getCORSHeaders, formatBytes, parseFileSize } from './utils';
+
+const VERSION = '1.2.0';
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -40,7 +48,7 @@ export default {
     if (url.pathname === '/health' || url.pathname === '/ping') {
       return new Response(JSON.stringify({
         status: 'healthy',
-        version: '1.1.0',
+        version: VERSION,
         timestamp: new Date().toISOString(),
       }), {
         status: 200,
@@ -103,12 +111,26 @@ export default {
         return errorResponse('Method not allowed', 405);
       }
 
-      // Validate origin
-      const allowedOrigins = env.ALLOWED_ORIGINS || '*';
-      if (!isAllowedOrigin(parsed.sourceUrl, allowedOrigins)) {
-        return errorResponse('Origin not allowed', 403);
+      // Validate origin against allow/block lists
+      const validation = await validateOrigin(parsed.domain, env);
+      addLog('Origin validation', `${validation.reason} (source: ${validation.source})`);
+
+      if (!validation.allowed) {
+        // Non-allowed or blocked: redirect to original URL
+        // This ensures no service disruption while preventing CDN abuse
+        addLog('Redirecting to origin', `Reason: ${validation.reason}`);
+
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': parsed.sourceUrl,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'X-ImgPro-Status': 'redirect',
+            'X-ImgPro-Reason': validation.reason,
+            ...getCORSHeaders(),
+          },
+        });
       }
-      addLog('Origin validated', allowedOrigins === '*' ? 'All origins allowed' : allowedOrigins);
 
       // Check R2 cache (skip if force parameter is set)
       if (!parsed.forceReprocess) {
@@ -170,19 +192,28 @@ export default {
       // Cache miss (or forced reprocess) - fetch from origin
       addLog('Cache MISS', `Fetching from origin: ${parsed.sourceUrl}`);
 
-      const response = await fetchFromOrigin(parsed.sourceUrl, env);
+      // Create redirect validator that checks against our allowlist
+      const validateRedirect = async (finalUrl: string): Promise<boolean> => {
+        const urlValidation = validateUrlDomain(finalUrl);
+        if (!urlValidation.valid || !urlValidation.domain) {
+          return false;
+        }
+
+        // Check if the redirected domain is also allowed
+        const redirectValidation = await validateOrigin(urlValidation.domain, env);
+        return redirectValidation.allowed;
+      };
+
+      const response = await fetchFromOrigin(parsed.sourceUrl, env, undefined, validateRedirect);
 
       if (!response.ok) {
         addLog('Origin fetch failed', `HTTP ${response.status}: ${response.statusText}`);
         if (response.status === 404) {
-          return errorResponse(
-            `Image not found: ${parsed.sourceUrl}`,
-            404
-          );
+          return errorResponse('Image not found at origin', 404);
         } else {
           return errorResponse(
-            `Origin error ${response.status}: ${response.statusText}`,
-            503
+            `Origin returned ${response.status}`,
+            502 // Bad Gateway - origin error
           );
         }
       }
@@ -193,7 +224,7 @@ export default {
       const contentType = response.headers.get('Content-Type') || '';
       if (!isImageContentType(contentType)) {
         addLog('Content type validation failed', contentType);
-        return errorResponse(`Not an image: ${contentType}`, 415);
+        return errorResponse('Origin did not return an image', 415);
       }
 
       addLog('Content type validated', contentType);
@@ -208,10 +239,7 @@ export default {
         addLog('Image data fetched', `${formatBytes(imageData.byteLength)}`);
       } catch (error) {
         addLog('File size exceeded', error instanceof Error ? error.message : 'Unknown error');
-        return errorResponse(
-          error instanceof Error ? error.message : 'File too large',
-          413
-        );
+        return errorResponse('File too large', 413);
       }
 
       // Store in R2
@@ -262,10 +290,22 @@ export default {
 
     } catch (error) {
       console.error('Worker error:', error);
-      return errorResponse(
-        error instanceof Error ? error.message : 'Unknown error',
-        500
-      );
+
+      // Don't expose internal error details to clients
+      const message = error instanceof Error ? error.message : 'Unknown error';
+
+      // Check for specific error types to return appropriate status codes
+      if (message.includes('Invalid domain') || message.includes('Invalid URL')) {
+        return errorResponse('Invalid request', 400);
+      }
+      if (message.includes('Redirect to')) {
+        return errorResponse('Redirect blocked for security', 403);
+      }
+      if (message.includes('timeout')) {
+        return errorResponse('Origin timeout', 504);
+      }
+
+      return errorResponse('Internal server error', 500);
     }
   },
 };

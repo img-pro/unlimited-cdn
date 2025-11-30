@@ -3,11 +3,36 @@
  */
 export interface Env {
   R2: R2Bucket;
+  ORIGINS_KV?: KVNamespace;
+  ORIGIN_MODE?: 'open' | 'list' | 'registered';
   ALLOWED_ORIGINS?: string;
+  BLOCKED_ORIGINS?: string;
   DEBUG?: string;
   MAX_FILE_SIZE?: string;
   FETCH_TIMEOUT?: string;
   ORIGIN_USER_AGENT?: string;
+}
+
+/**
+ * Origin validation result
+ */
+export interface OriginValidationResult {
+  allowed: boolean;
+  reason: 'allowed' | 'blocked' | 'not_in_allowlist' | 'invalid_domain';
+  source: 'config' | 'kv' | 'default';
+  domain_record?: DomainRecord;
+}
+
+/**
+ * Domain record stored in KV
+ *
+ * Key: domain name (e.g., "example.com", "www.example.com")
+ * Value: JSON-encoded DomainRecord
+ *
+ * Single KV read per request. Additional fields can be added as needed.
+ */
+export interface DomainRecord {
+  status: 'active' | 'blocked' | 'suspended';
 }
 
 /**
