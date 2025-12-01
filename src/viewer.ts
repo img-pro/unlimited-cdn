@@ -5,6 +5,9 @@
 import type { HtmlViewerOptions } from './types';
 import { arrayBufferToBase64, formatBytes, formatTime, getCORSHeaders } from './utils';
 
+// Version should match index.ts - update both when releasing
+const VERSION = '1.2.1';
+
 /**
  * Create HTML viewer with image preview, metadata, and delete button
  */
@@ -287,7 +290,7 @@ export function createHtmlViewer(options: HtmlViewerOptions): Response {
     <header>
       <div>
         <h1>CDN Image Viewer</h1>
-        <div class="subtitle">ImgPro CDN Worker · Version 1.2.0</div>
+        <div class="subtitle">ImgPro CDN Worker · Version ${VERSION}</div>
       </div>
       <button class="delete-btn" id="deleteBtn" onclick="deleteImage()">Delete Image</button>
     </header>

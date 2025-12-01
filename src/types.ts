@@ -47,15 +47,8 @@ export interface ParsedUrl {
   viewImage: boolean;
 }
 
-/**
- * Cache statistics
- */
-export interface CacheStats {
-  hits: number;
-  misses: number;
-  errors: number;
-  totalSize: number;
-}
+// REMOVED (2024-11-30): CacheStats interface - never used
+// Metrics tracking not yet implemented; add back when needed
 
 /**
  * Log entry for debugging

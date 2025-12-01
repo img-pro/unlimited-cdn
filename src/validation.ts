@@ -285,17 +285,7 @@ export function isImageContentType(contentType: string): boolean {
   return imageTypes.some(type => contentType.toLowerCase().includes(type));
 }
 
-/**
- * Legacy function for backward compatibility
- * @deprecated Use validateOrigin() instead
- */
-export function isAllowedOrigin(sourceUrl: string, allowedOrigins: string): boolean {
-  if (allowedOrigins === '*') return true;
-
-  try {
-    const url = new URL(sourceUrl);
-    return matchesDomainList(url.hostname, allowedOrigins);
-  } catch {
-    return false;
-  }
-}
+// =============================================================================
+// REMOVED (2024-11-30): isAllowedOrigin() - deprecated legacy function
+// Use validateOrigin() instead for async mode-based origin validation
+// =============================================================================
