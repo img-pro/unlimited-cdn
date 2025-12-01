@@ -130,7 +130,7 @@ export default {
             'Location': parsed.sourceUrl,
             'Cache-Control': 'no-store, no-cache, must-revalidate',
             'X-ImgPro-Status': 'redirect',
-            'X-ImgPro-Reason': validation.reason,
+            // Note: X-ImgPro-Reason removed to prevent information disclosure
             ...getCORSHeaders(),
           },
         });
@@ -153,7 +153,8 @@ export default {
           const metadata = cached.customMetadata || {};
 
           // If view parameter is set, return HTML viewer
-          if (parsed.viewImage) {
+          // SECURITY: Only allow in debug mode to prevent information disclosure
+          if (parsed.viewImage && env.DEBUG === 'true') {
             const imageData = await cached.arrayBuffer();
             const totalTime = Date.now() - startTime;
             addLog('Generating HTML viewer', `${imageData.byteLength} bytes in ${totalTime}ms`);
@@ -219,7 +220,6 @@ export default {
             'Location': parsed.sourceUrl,
             'Cache-Control': 'no-store, no-cache, must-revalidate',
             'X-ImgPro-Status': 'redirect',
-            'X-ImgPro-Reason': `origin-${response.status}`,
             ...getCORSHeaders(),
           },
         });
@@ -237,7 +237,6 @@ export default {
             'Location': parsed.sourceUrl,
             'Cache-Control': 'no-store, no-cache, must-revalidate',
             'X-ImgPro-Status': 'redirect',
-            'X-ImgPro-Reason': 'not-image',
             ...getCORSHeaders(),
           },
         });
@@ -262,7 +261,6 @@ export default {
             'Location': parsed.sourceUrl,
             'Cache-Control': 'no-store, no-cache, must-revalidate',
             'X-ImgPro-Status': 'redirect',
-            'X-ImgPro-Reason': 'file-too-large',
             ...getCORSHeaders(),
           },
         });
@@ -282,7 +280,8 @@ export default {
       addLog('Stored in R2', `${formatBytes(imageData.byteLength)}`);
 
       // If view parameter is set, return HTML viewer
-      if (parsed.viewImage) {
+      // SECURITY: Only allow in debug mode to prevent information disclosure
+      if (parsed.viewImage && env.DEBUG === 'true') {
         const totalTime = Date.now() - startTime;
         addLog('Generating HTML viewer', `Processing complete in ${totalTime}ms`);
 
@@ -337,7 +336,6 @@ export default {
             'Location': parsed.sourceUrl,
             'Cache-Control': 'no-store, no-cache, must-revalidate',
             'X-ImgPro-Status': 'redirect',
-            'X-ImgPro-Reason': 'error',
             ...getCORSHeaders(),
           },
         });
