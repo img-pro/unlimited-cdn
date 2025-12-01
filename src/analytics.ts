@@ -13,7 +13,7 @@ import { getCORSHeaders } from './utils';
 export function createStatsResponse(env: Env): Response {
   const stats = {
     status: 'healthy',
-    version: '1.2.0',
+    version: '1.2.1',
     mode: 'single-domain',
     features: {
       caching: 'R2 CDN caching enabled',

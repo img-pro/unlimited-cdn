@@ -5,15 +5,19 @@
  * - Cache hit: Returns image from R2 with long cache headers
  * - Cache miss: Fetches from origin, stores in R2, returns image
  *
- * Origin validation:
- * - Allowed origins: served via CDN (cached in R2)
- * - Non-allowed origins: redirected to original URL (no caching, no blocking)
- * - Blocked origins: redirected to original URL
- * - Invalid domains (IPs, internal): rejected with 400
+ * Error handling philosophy:
+ * - CDN serves image OR redirects to origin. Never errors for origin issues.
+ * - If we can't serve via CDN for any reason, redirect to origin.
+ * - User sees the real origin response (404, 500, etc.) - honest and simple.
+ * - Only hard errors for truly invalid requests (IPs, SSRF attempts).
+ *
+ * Hard errors (400/403):
+ * - Invalid domains (IPs, internal hostnames) - security
+ * - SSRF redirect attempts - security
  *
  * No separate R2 public bucket domain needed - the worker IS the CDN.
  *
- * @version 1.2.0
+ * @version 1.2.1
  */
 
 import type { Env, LogEntry } from './types';
@@ -30,7 +34,7 @@ import { createHtmlViewer } from './viewer';
 import { createStatsResponse, createLogger } from './analytics';
 import { errorResponse, getCORSHeaders, formatBytes, parseFileSize } from './utils';
 
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -207,24 +211,36 @@ export default {
       const response = await fetchFromOrigin(parsed.sourceUrl, env, undefined, validateRedirect);
 
       if (!response.ok) {
-        addLog('Origin fetch failed', `HTTP ${response.status}: ${response.statusText}`);
-        if (response.status === 404) {
-          return errorResponse('Image not found at origin', 404);
-        } else {
-          return errorResponse(
-            `Origin returned ${response.status}`,
-            502 // Bad Gateway - origin error
-          );
-        }
+        // Redirect to origin - let user see the real error (404, 500, etc.)
+        addLog('Origin fetch failed', `HTTP ${response.status} - redirecting to origin`);
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': parsed.sourceUrl,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'X-ImgPro-Status': 'redirect',
+            'X-ImgPro-Reason': `origin-${response.status}`,
+            ...getCORSHeaders(),
+          },
+        });
       }
 
       addLog('Origin fetch success', `HTTP ${response.status}`);
 
-      // Validate content type
+      // Validate content type - if not an image, redirect to origin
       const contentType = response.headers.get('Content-Type') || '';
       if (!isImageContentType(contentType)) {
-        addLog('Content type validation failed', contentType);
-        return errorResponse('Origin did not return an image', 415);
+        addLog('Not an image', `${contentType} - redirecting to origin`);
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': parsed.sourceUrl,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'X-ImgPro-Status': 'redirect',
+            'X-ImgPro-Reason': 'not-image',
+            ...getCORSHeaders(),
+          },
+        });
       }
 
       addLog('Content type validated', contentType);
@@ -238,8 +254,18 @@ export default {
         imageData = await fetchImageData(response, maxSize);
         addLog('Image data fetched', `${formatBytes(imageData.byteLength)}`);
       } catch (error) {
-        addLog('File size exceeded', error instanceof Error ? error.message : 'Unknown error');
-        return errorResponse('File too large', 413);
+        // File too large - redirect to origin so user gets the full file directly
+        addLog('File too large', `${error instanceof Error ? error.message : 'Unknown'} - redirecting to origin`);
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': parsed.sourceUrl,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'X-ImgPro-Status': 'redirect',
+            'X-ImgPro-Reason': 'file-too-large',
+            ...getCORSHeaders(),
+          },
+        });
       }
 
       // Store in R2
@@ -291,21 +317,34 @@ export default {
     } catch (error) {
       console.error('Worker error:', error);
 
-      // Don't expose internal error details to clients
       const message = error instanceof Error ? error.message : 'Unknown error';
 
-      // Check for specific error types to return appropriate status codes
+      // Hard errors for security issues only
       if (message.includes('Invalid domain') || message.includes('Invalid URL')) {
         return errorResponse('Invalid request', 400);
       }
       if (message.includes('Redirect to')) {
         return errorResponse('Redirect blocked for security', 403);
       }
-      if (message.includes('timeout')) {
-        return errorResponse('Origin timeout', 504);
-      }
 
-      return errorResponse('Internal server error', 500);
+      // For all other errors, try to extract origin URL and redirect
+      // This handles timeouts, fetch failures, R2 errors, etc.
+      try {
+        const parsed = parseUrl(url);
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': parsed.sourceUrl,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'X-ImgPro-Status': 'redirect',
+            'X-ImgPro-Reason': 'error',
+            ...getCORSHeaders(),
+          },
+        });
+      } catch {
+        // URL parsing failed - can't redirect, return generic error
+        return errorResponse('Invalid request', 400);
+      }
     }
   },
 };
