@@ -15,6 +15,31 @@
 import type { Env, ParsedUrl, OriginValidationResult, DomainRecord } from './types';
 
 /**
+ * Normalize a path to prevent path traversal attacks
+ *
+ * SECURITY: Resolves ".." and "." segments to prevent cache key collisions
+ * and potential SSRF via path manipulation.
+ *
+ * Example: "/a/../b/./c.jpg" -> "/b/c.jpg"
+ */
+function normalizePath(path: string): string {
+  const segments = path.split('/').filter(s => s !== '');
+  const normalized: string[] = [];
+
+  for (const segment of segments) {
+    if (segment === '..') {
+      // Go up one directory (if possible)
+      normalized.pop();
+    } else if (segment !== '.') {
+      // Skip "." (current directory), add everything else
+      normalized.push(segment);
+    }
+  }
+
+  return '/' + normalized.join('/');
+}
+
+/**
  * Parse URL to extract domain, path, cache key, and parameters
  */
 export function parseUrl(url: URL): ParsedUrl {
@@ -26,7 +51,15 @@ export function parseUrl(url: URL): ParsedUrl {
   }
 
   const domain = pathParts[0].toLowerCase();
-  const path = '/' + pathParts.slice(1).join('/');
+  const rawPath = '/' + pathParts.slice(1).join('/');
+
+  // SECURITY: Normalize path to prevent traversal attacks
+  const path = normalizePath(rawPath);
+
+  // Reject if path tries to escape (normalized to empty or root)
+  if (path === '/' || path === '') {
+    throw new Error('Invalid path: path traversal detected');
+  }
 
   if (!isValidDomain(domain)) {
     throw new Error(`Invalid domain: ${domain}`);
@@ -38,6 +71,7 @@ export function parseUrl(url: URL): ParsedUrl {
     .join('/');
   const sourceUrl = `https://${domain}${encodedPath}`;
 
+  // SECURITY: Use normalized path in cache key to prevent collisions
   const cacheKey = `${domain}${path}`;
 
   const forceReprocess = url.searchParams.get('force') === 'true' ||

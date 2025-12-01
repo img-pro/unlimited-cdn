@@ -28,7 +28,6 @@ import {
   handleHeadRequest,
   handleConditionalRequest,
   storeInCache,
-  deleteFromCache,
 } from './cache';
 import { createHtmlViewer } from './viewer';
 import { createStatsResponse, createLogger } from './analytics';
@@ -79,29 +78,10 @@ export default {
 
       addLog('Request received', `${request.method} ${parsed.domain}${parsed.path}`);
 
-      // Handle DELETE request (cache invalidation)
+      // DELETE functionality disabled - will be implemented with proper authentication later
+      // See issue W-03/W-11 in security audit
       if (request.method === 'DELETE') {
-        addLog('DELETE request', 'Invalidating cache');
-
-        const cached = await getFromCache(env, parsed.cacheKey);
-        if (!cached) {
-          return errorResponse('Image not found in cache', 404);
-        }
-
-        await deleteFromCache(env, parsed.cacheKey);
-        addLog('Cache invalidated', 'Image deleted from R2');
-
-        return new Response(JSON.stringify({
-          success: true,
-          message: 'Image deleted from cache',
-          cacheKey: parsed.cacheKey,
-        }), {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            ...getCORSHeaders(),
-          },
-        });
+        return errorResponse('DELETE method not currently supported', 405);
       }
 
       // Handle HEAD request
