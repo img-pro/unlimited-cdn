@@ -23,9 +23,21 @@ This worker acts as a caching CDN for WordPress images:
 - **Direct Serving** - Images served through the worker with year-long cache headers
 - **CORS Support** - Configurable cross-origin resource sharing
 - **Image Validation** - Verify content types and file sizes
-- **Hotlink Protection** - Optional domain whitelist
-- **Cache Invalidation** - DELETE endpoint to purge cached images
-- **Debug Viewer** - Visual debugging with `?view=1` parameter
+- **Origin Allowlist** - KV-based domain validation for managed service
+- **Graceful Fallback** - Redirects to origin on errors (no broken images)
+- **Security Hardening** - Path traversal protection, SSRF prevention, redirect validation
+
+## Security Features
+
+The worker includes several security measures:
+
+| Feature | Description |
+|---------|-------------|
+| **Path Normalization** | Prevents path traversal attacks (`../` sequences) |
+| **SSRF Protection** | Blocks requests to internal IPs and localhost |
+| **Redirect Validation** | Validates redirected URLs against allowlist |
+| **Domain Validation** | IDN/punycode normalization to prevent homograph attacks |
+| **No Information Disclosure** | Error responses redirect to origin without exposing internals |
 
 ## How It Works
 
@@ -48,6 +60,8 @@ Return from R2    Fetch from origin
 ```
 
 Both cache hits and misses return images with `Cache-Control: public, max-age=31536000, immutable`.
+
+**Error Handling:** If anything fails (origin down, not an image, file too large), the worker redirects to the original URL. The user sees the origin's response directly - no broken images.
 
 ## URL Structure
 
@@ -120,31 +134,50 @@ binding = "R2"
 bucket_name = "imgpro-cdn"
 
 [vars]
-ALLOWED_ORIGINS = "*"           # Or "site1.com,site2.com"
+ORIGIN_MODE = "open"            # "open", "list", or "registered"
+ALLOWED_ORIGINS = "*"           # For "list" mode: "site1.com,site2.com"
 MAX_FILE_SIZE = "50MB"          # Maximum image size
 FETCH_TIMEOUT = "30000"         # Origin timeout (ms)
-DEBUG = "false"                 # Enable console logging
+DEBUG = "false"                 # Enable debug viewer (disable in production)
 ```
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ALLOWED_ORIGINS` | Allowed origin domains (`*` or comma-separated) | `*` |
+| `ORIGIN_MODE` | Origin validation mode (see below) | `open` |
+| `ALLOWED_ORIGINS` | For "list" mode: comma-separated domains | `*` |
+| `BLOCKED_ORIGINS` | Domains to always block | - |
 | `MAX_FILE_SIZE` | Max file size (`10MB`, `100MB`, etc.) | `50MB` |
 | `FETCH_TIMEOUT` | Origin fetch timeout in ms | `30000` |
-| `DEBUG` | Enable debug logging | `false` |
+| `DEBUG` | Enable debug viewer (`true`/`false`) | `false` |
+
+### Origin Modes
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `open` | Accept any origin domain | Self-hosted, single site |
+| `list` | Only allow domains in `ALLOWED_ORIGINS` | Self-hosted, multi-site |
+| `registered` | Validate against KV namespace | Managed service (SaaS) |
 
 ## Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/{domain}/{path}` | GET | Fetch/serve image |
-| `/{domain}/{path}` | HEAD | Check if cached |
-| `/{domain}/{path}` | DELETE | Invalidate cache |
-| `/{domain}/{path}?view=1` | GET | Debug viewer (HTML) |
+| `/{domain}/{path}` | HEAD | Check if cached (no download) |
+| `/{domain}/{path}?view=1` | GET | Debug viewer (requires `DEBUG=true`) |
+| `/{domain}/{path}?force=1` | GET | Bypass cache, re-fetch from origin |
 | `/health` | GET | Health check |
-| `/stats` | GET | Cache statistics |
+| `/stats` | GET | Basic statistics |
+
+## Response Headers
+
+| Header | Value | Description |
+|--------|-------|-------------|
+| `X-ImgPro-Status` | `hit`, `miss`, `redirect` | Cache status |
+| `Cache-Control` | `public, max-age=31536000, immutable` | Browser caching |
+| `ETag` | R2 object ETag | Conditional requests |
 
 ## WordPress Integration
 
@@ -154,6 +187,8 @@ This worker is designed for the [Bandwidth Saver](https://wordpress.org/plugins/
 - Rewrites image URLs to your CDN domain
 - Falls back to origin if CDN fails
 - Handles srcset and responsive images
+- Encrypts API keys at rest
+- Provides admin UI for configuration
 
 **Manual integration (without plugin):**
 ```php
@@ -174,6 +209,9 @@ add_filter('wp_get_attachment_url', 'cdn_rewrite_url');
 # Local development
 npm run dev
 # Worker runs at http://localhost:8787
+
+# Type checking
+npm run typecheck
 
 # View logs
 wrangler tail
@@ -201,16 +239,24 @@ bandwidth-saver-worker/
 ├── src/
 │   ├── index.ts        # Main worker entry
 │   ├── cache.ts        # R2 caching logic
-│   ├── origin.ts       # Origin fetch
-│   ├── validation.ts   # URL parsing & validation
+│   ├── origin.ts       # Origin fetch with redirect validation
+│   ├── validation.ts   # URL parsing, path normalization, domain validation
 │   ├── analytics.ts    # Stats endpoint
-│   ├── utils.ts        # Helpers
+│   ├── utils.ts        # Helpers (CORS, formatting)
 │   ├── viewer.ts       # Debug HTML viewer
 │   └── types.ts        # TypeScript types
 ├── wrangler.toml.example
 ├── package.json
 └── README.md
 ```
+
+## Known Limitations
+
+| Limitation | Status | Notes |
+|------------|--------|-------|
+| No cache invalidation API | Planned | DELETE endpoint temporarily disabled |
+| No usage metering | Planned | For managed service billing |
+| No image transformation | Not planned | Focus is caching, not processing |
 
 ## Troubleshooting
 
@@ -222,15 +268,27 @@ bandwidth-saver-worker/
 
 ### CORS errors
 
-Set `ALLOWED_ORIGINS = "*"` or list your domains.
+Set `ALLOWED_ORIGINS = "*"` or list your domains in `ORIGIN_MODE = "list"`.
 
 ### Origin timeouts
 
 Increase `FETCH_TIMEOUT` (default 30000ms).
 
+### Images redirect instead of caching
+
+This is intentional for:
+- Non-image content types
+- Files larger than `MAX_FILE_SIZE`
+- Origin errors (404, 500, etc.)
+- Blocked or unregistered domains
+
+Check `X-ImgPro-Status: redirect` header to confirm.
+
 ### Debug a specific image
 
-Add `?view=1` to any image URL to see the debug viewer with workflow logs.
+Set `DEBUG = "true"` in wrangler.toml, then add `?view=1` to any image URL.
+
+**Note:** Debug viewer is disabled by default in production to prevent information disclosure.
 
 ## License
 

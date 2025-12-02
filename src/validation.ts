@@ -304,10 +304,17 @@ export function validateUrlDomain(url: string): { valid: boolean; domain: string
 
 /**
  * Check if content type is an image
+ *
+ * SECURITY: Uses startsWith() for proper MIME type matching instead of includes().
+ * This prevents edge cases where a malformed Content-Type like "text/html; image/png"
+ * could bypass validation. The Content-Type header format is: type/subtype[; params]
  */
 export function isImageContentType(contentType: string): boolean {
   // Handle missing content-type
   if (!contentType) return false;
+
+  // Normalize: lowercase and extract the MIME type (before any semicolon)
+  const mimeType = contentType.toLowerCase().split(';')[0].trim();
 
   const imageTypes = [
     'image/jpeg', 'image/jpg', 'image/png', 'image/gif',
@@ -316,7 +323,7 @@ export function isImageContentType(contentType: string): boolean {
     'image/heic', 'image/heif', 'image/jxl'
   ];
 
-  return imageTypes.some(type => contentType.toLowerCase().includes(type));
+  return imageTypes.includes(mimeType);
 }
 
 // =============================================================================

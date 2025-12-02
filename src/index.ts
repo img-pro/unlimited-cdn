@@ -281,6 +281,7 @@ export default {
       }
 
       // Return the actual image (just fetched and cached)
+      // Note: No ETag on cache miss - R2 will provide ETag on subsequent cache hits
       addLog('Serving image', `${formatBytes(imageData.byteLength)}, ${contentType}`);
       return new Response(imageData, {
         status: 200,
