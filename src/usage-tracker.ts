@@ -148,6 +148,10 @@ export class SiteUsageTracker implements DurableObject {
 	 * Alarm handler - flushes accumulated metrics to D1 every 60 seconds
 	 *
 	 * Cloudflare guarantees alarm will fire even if DO instance moves/restarts
+	 *
+	 * CONCURRENCY NOTE: D1 calls are external I/O (not storage), so fetch() handlers
+	 * can interleave during the await. We capture values before the D1 call and
+	 * subtract only what we flushed, preserving any metrics added during the write.
 	 */
 	async alarm(): Promise<void> {
 		const now = Math.floor(Date.now() / 1000);
@@ -161,8 +165,18 @@ export class SiteUsageTracker implements DurableObject {
 
 		const hourStart = Math.floor(Date.now() / 3600000) * 3600;
 
+		// Capture current values BEFORE any await points
+		// This ensures we only flush what existed at this moment
+		const flushBandwidth = this.bandwidth;
+		const flushRequests = this.requests;
+		const flushCacheHits = this.cacheHits;
+		const flushCacheMisses = this.cacheMisses;
+		const flushSiteId = this.siteId;
+		const flushDomain = this.domain;
+
 		try {
 			// Write to D1 in batch transaction
+			// NOTE: During this await, fetch() can run and increment counters
 			const batch = [
 				// Update current period totals in sites table
 				// images_cached = total requests (all deliveries, hits + misses)
@@ -174,7 +188,7 @@ export class SiteUsageTracker implements DurableObject {
 						cache_misses = cache_misses + ?,
 						updated_at = ?
 					WHERE id = ?`
-				).bind(this.bandwidth, this.requests, this.cacheHits, this.cacheMisses, now, this.siteId),
+				).bind(flushBandwidth, flushRequests, flushCacheHits, flushCacheMisses, now, flushSiteId),
 
 				// Insert/update hourly rollup
 				this.env.BILLING_DB.prepare(
@@ -186,32 +200,32 @@ export class SiteUsageTracker implements DurableObject {
 						cache_hits = cache_hits + excluded.cache_hits,
 						cache_misses = cache_misses + excluded.cache_misses,
 						updated_at = excluded.updated_at`
-				).bind(this.siteId, hourStart, this.bandwidth, this.requests, this.cacheHits, this.cacheMisses, now, now),
+				).bind(flushSiteId, hourStart, flushBandwidth, flushRequests, flushCacheHits, flushCacheMisses, now, now),
 			];
 
 			await this.env.BILLING_DB.batch(batch);
 
 			console.log(
-				`[UsageTracker] Flushed ${this.domain}: ${this.requests} req, ${this.bandwidth} bytes, ${this.cacheHits} hits, ${this.cacheMisses} misses`
+				`[UsageTracker] Flushed ${flushDomain}: ${flushRequests} req, ${flushBandwidth} bytes, ${flushCacheHits} hits, ${flushCacheMisses} misses`
 			);
 
-			// Reset storage FIRST to prevent double-counting on re-hydration
-			// If this fails, in-memory counters remain intact for retry
-			await this.state.storage.put({
-				[STORAGE_KEYS.BANDWIDTH]: 0,
-				[STORAGE_KEYS.REQUESTS]: 0,
-				[STORAGE_KEYS.CACHE_HITS]: 0,
-				[STORAGE_KEYS.CACHE_MISSES]: 0,
-			});
+			// Subtract only what we flushed, preserving any metrics added during D1 write
+			// This is safe because fetch() only adds to counters, never subtracts
+			this.bandwidth -= flushBandwidth;
+			this.requests -= flushRequests;
+			this.cacheHits -= flushCacheHits;
+			this.cacheMisses -= flushCacheMisses;
 
-			// Only reset in-memory counters after storage is successfully reset
-			this.bandwidth = 0;
-			this.requests = 0;
-			this.cacheHits = 0;
-			this.cacheMisses = 0;
+			// Persist the new counter values (may be > 0 if fetch() ran during D1 write)
+			await this.state.storage.put({
+				[STORAGE_KEYS.BANDWIDTH]: this.bandwidth,
+				[STORAGE_KEYS.REQUESTS]: this.requests,
+				[STORAGE_KEYS.CACHE_HITS]: this.cacheHits,
+				[STORAGE_KEYS.CACHE_MISSES]: this.cacheMisses,
+			});
 		} catch (err) {
-			console.error(`[UsageTracker] D1 write failed for ${this.domain}:`, err);
-			// Don't reset counters - will retry on next alarm
+			console.error(`[UsageTracker] D1 write failed for ${flushDomain}:`, err);
+			// Don't modify counters - will retry on next alarm
 			// This prevents data loss if D1 or storage is temporarily unavailable
 		}
 
