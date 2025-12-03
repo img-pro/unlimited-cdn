@@ -193,24 +193,28 @@ export function matchesDomainList(domain: string, list: string): boolean {
 }
 
 /**
- * Get domain record from KV
+ * Get domain records from KV
  *
- * KV Structure:
+ * KV Structure (M:N model):
  *   Key: domain (e.g., "example.com")
- *   Value: JSON DomainRecord { status: "active" | "blocked" | "suspended" }
+ *   Value: JSON DomainRecord[] - Array of { site_id, status }
+ *
+ * Same domain can belong to multiple sites (e.g., shared agency CDN)
  */
-async function getDomainRecord(
+async function getDomainRecords(
   domain: string,
   kv: KVNamespace
-): Promise<DomainRecord | null> {
+): Promise<DomainRecord[]> {
   try {
     const value = await kv.get(domain);
-    if (!value) return null;
+    if (!value) return [];
 
-    return JSON.parse(value) as DomainRecord;
+    const parsed = JSON.parse(value);
+    // Value should always be array from billing service
+    return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
     console.error('KV domain lookup failed:', error);
-    return null;
+    return [];
   }
 }
 
@@ -244,8 +248,19 @@ export async function validateOrigin(
   }
 
   // Mode: open - allow all (blocklist already checked)
+  // BUT still lookup KV for usage tracking if available
   if (mode === 'open') {
-    return { allowed: true, reason: 'allowed', source: 'default' };
+    // Try to get domain records for usage tracking (non-blocking)
+    let domain_records: DomainRecord[] | undefined;
+    if (env.ORIGINS_KV) {
+      try {
+        domain_records = await getDomainRecords(domain, env.ORIGINS_KV);
+      } catch (e) {
+        // Silently fail - tracking is optional in open mode
+        console.warn('[validateOrigin] KV lookup failed in open mode:', e);
+      }
+    }
+    return { allowed: true, reason: 'allowed', source: 'default', domain_records };
   }
 
   // Mode: list - check ALLOWED_ORIGINS config
@@ -264,25 +279,28 @@ export async function validateOrigin(
     return { allowed: false, reason: 'not_in_allowlist', source: 'config' };
   }
 
-  // Mode: registered - check KV for domain record
+  // Mode: registered - check KV for domain records (M:N model)
   if (mode === 'registered') {
     if (!env.ORIGINS_KV) {
       console.error('ORIGIN_MODE is "registered" but ORIGINS_KV is not bound');
       return { allowed: false, reason: 'not_in_allowlist', source: 'kv' };
     }
 
-    const record = await getDomainRecord(domain, env.ORIGINS_KV);
+    const records = await getDomainRecords(domain, env.ORIGINS_KV);
 
-    if (!record) {
+    if (records.length === 0) {
       return { allowed: false, reason: 'not_in_allowlist', source: 'kv' };
     }
 
-    if (record.status === 'active') {
-      return { allowed: true, reason: 'allowed', source: 'kv', domain_record: record };
+    // Check if at least one record is active
+    const hasActive = records.some(r => r.status === 'active');
+
+    if (hasActive) {
+      return { allowed: true, reason: 'allowed', source: 'kv', domain_records: records };
     }
 
-    // blocked or suspended
-    return { allowed: false, reason: 'blocked', source: 'kv', domain_record: record };
+    // All records are blocked or suspended
+    return { allowed: false, reason: 'blocked', source: 'kv', domain_records: records };
   }
 
   // Unknown mode - default to rejecting

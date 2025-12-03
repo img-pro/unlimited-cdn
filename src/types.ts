@@ -4,6 +4,8 @@
 export interface Env {
   R2: R2Bucket;
   ORIGINS_KV?: KVNamespace;
+  BILLING_DB: D1Database;
+  USAGE_TRACKER: DurableObjectNamespace;
   ORIGIN_MODE?: 'open' | 'list' | 'registered';
   ALLOWED_ORIGINS?: string;
   BLOCKED_ORIGINS?: string;
@@ -20,18 +22,22 @@ export interface OriginValidationResult {
   allowed: boolean;
   reason: 'allowed' | 'blocked' | 'not_in_allowlist' | 'invalid_domain';
   source: 'config' | 'kv' | 'default';
-  domain_record?: DomainRecord;
+  domain_records?: DomainRecord[];
 }
 
 /**
  * Domain record stored in KV
  *
  * Key: domain name (e.g., "example.com", "www.example.com")
- * Value: JSON-encoded DomainRecord
+ * Value: JSON-encoded DomainRecord[] (array to support M:N relationship)
  *
- * Single KV read per request. Additional fields can be added as needed.
+ * M:N Model: Same domain can belong to multiple sites
+ * Example: "cdn.agency.com" → [{ site_id: 100, status: "active" }, { site_id: 200, status: "active" }]
+ *
+ * Single KV read per request. Usage tracked to all active sites.
  */
 export interface DomainRecord {
+  site_id: number;
   status: 'active' | 'blocked' | 'suspended';
 }
 

@@ -32,11 +32,15 @@ import {
 import { createHtmlViewer } from './viewer';
 import { createStatsResponse, createLogger } from './analytics';
 import { errorResponse, getCORSHeaders, formatBytes, parseFileSize } from './utils';
+import { trackUsage } from './usage';
 
 const VERSION = '1.2.1';
 
+// Export Durable Object for usage tracking
+export { SiteUsageTracker } from './usage-tracker';
+
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     // CORS preflight
@@ -156,6 +160,10 @@ export default {
 
           // Return the actual image with long cache headers
           addLog('Serving image', `${cached.size} bytes, ${imageContentType}`);
+
+          // Track usage (cache hit)
+          trackUsage(env, ctx, parsed.domain, cached.size, true, validation.domain_records);
+
           return new Response(cached.body, {
             status: 200,
             headers: {
@@ -283,6 +291,10 @@ export default {
       // Return the actual image (just fetched and cached)
       // Note: No ETag on cache miss - R2 will provide ETag on subsequent cache hits
       addLog('Serving image', `${formatBytes(imageData.byteLength)}, ${contentType}`);
+
+      // Track usage (cache miss)
+      trackUsage(env, ctx, parsed.domain, imageData.byteLength, false, validation.domain_records);
+
       return new Response(imageData, {
         status: 200,
         headers: {
