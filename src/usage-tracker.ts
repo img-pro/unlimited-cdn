@@ -65,10 +65,13 @@ export class SiteUsageTracker implements DurableObject {
 		// This ensures we recover counters after memory eviction
 		this.state.blockConcurrencyWhile(async () => {
 			await this.loadFromStorage();
-		});
 
-		// Set initial alarm for 60 seconds from now (if not already set)
-		this.state.storage.setAlarm(Date.now() + 60000);
+			// Only set alarm if none exists (preserve pending alarms on re-hydration)
+			const existingAlarm = await this.state.storage.getAlarm();
+			if (!existingAlarm) {
+				await this.state.storage.setAlarm(Date.now() + 60000);
+			}
+		});
 	}
 
 	/**
@@ -192,22 +195,24 @@ export class SiteUsageTracker implements DurableObject {
 				`[UsageTracker] Flushed ${this.domain}: ${this.requests} req, ${this.bandwidth} bytes, ${this.cacheHits} hits, ${this.cacheMisses} misses`
 			);
 
-			// Reset counters after successful flush (both in-memory and storage)
-			this.bandwidth = 0;
-			this.requests = 0;
-			this.cacheHits = 0;
-			this.cacheMisses = 0;
-
+			// Reset storage FIRST to prevent double-counting on re-hydration
+			// If this fails, in-memory counters remain intact for retry
 			await this.state.storage.put({
 				[STORAGE_KEYS.BANDWIDTH]: 0,
 				[STORAGE_KEYS.REQUESTS]: 0,
 				[STORAGE_KEYS.CACHE_HITS]: 0,
 				[STORAGE_KEYS.CACHE_MISSES]: 0,
 			});
+
+			// Only reset in-memory counters after storage is successfully reset
+			this.bandwidth = 0;
+			this.requests = 0;
+			this.cacheHits = 0;
+			this.cacheMisses = 0;
 		} catch (err) {
 			console.error(`[UsageTracker] D1 write failed for ${this.domain}:`, err);
 			// Don't reset counters - will retry on next alarm
-			// This prevents data loss if D1 is temporarily unavailable
+			// This prevents data loss if D1 or storage is temporarily unavailable
 		}
 
 		// Schedule next alarm
