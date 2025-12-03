@@ -140,6 +140,8 @@ export default {
 
           // If view parameter is set, return HTML viewer
           // SECURITY: Only allow in debug mode to prevent information disclosure
+          // NOTE: Debug viewer intentionally skips trackUsage() - diagnostic requests
+          // shouldn't count toward billing metrics or inflate production statistics
           if (parsed.viewImage && env.DEBUG === 'true') {
             const imageData = await cached.arrayBuffer();
             const totalTime = Date.now() - startTime;
@@ -271,6 +273,8 @@ export default {
 
       // If view parameter is set, return HTML viewer
       // SECURITY: Only allow in debug mode to prevent information disclosure
+      // NOTE: Debug viewer intentionally skips trackUsage() - diagnostic requests
+      // shouldn't count toward billing metrics or inflate production statistics
       if (parsed.viewImage && env.DEBUG === 'true') {
         const totalTime = Date.now() - startTime;
         addLog('Generating HTML viewer', `Processing complete in ${totalTime}ms`);
