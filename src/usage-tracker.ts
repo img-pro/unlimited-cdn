@@ -179,16 +179,14 @@ export class SiteUsageTracker implements DurableObject {
 			// NOTE: During this await, fetch() can run and increment counters
 			const batch = [
 				// Update current period totals in sites table
-				// images_cached = total requests (all deliveries, hits + misses)
 				this.env.BILLING_DB.prepare(
 					`UPDATE sites SET
 						bandwidth_used_bytes = bandwidth_used_bytes + ?,
-						images_cached = images_cached + ?,
 						cache_hits = cache_hits + ?,
 						cache_misses = cache_misses + ?,
 						updated_at = ?
 					WHERE id = ?`
-				).bind(flushBandwidth, flushRequests, flushCacheHits, flushCacheMisses, now, flushSiteId),
+				).bind(flushBandwidth, flushCacheHits, flushCacheMisses, now, flushSiteId),
 
 				// Insert/update hourly rollup
 				this.env.BILLING_DB.prepare(
