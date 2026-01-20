@@ -100,9 +100,9 @@ Install the [Bandwidth Saver](https://wordpress.org/plugins/bandwidth-saver/) pl
 2. Search for "Bandwidth Saver"
 3. Install and activate
 4. Go to **Settings → Bandwidth Saver**
-5. Select "Cloudflare" mode
+5. Click the **Self-Host** tab
 6. Enter your CDN domain (e.g., `cdn.example.com`)
-7. Click "Enable CDN"
+7. Click **Add Domain**, then **Enable CDN**
 
 The plugin automatically rewrites all image URLs to use your CDN.
 
