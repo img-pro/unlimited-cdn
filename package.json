@@ -1,7 +1,7 @@
 {
   "name": "bandwidth-saver-worker",
   "version": "1.2.1",
-  "description": "Cloudflare Worker that caches WordPress images in R2",
+  "description": "Self-hosted image CDN powered by Cloudflare Workers and R2. Zero egress fees.",
   "main": "src/index.ts",
   "scripts": {
     "dev": "wrangler dev",
@@ -14,8 +14,9 @@
     "workers",
     "cdn",
     "cache",
-    "wordpress",
-    "imgpro"
+    "r2",
+    "image-proxy",
+    "edge"
   ],
   "author": "Img",
   "license": "MIT",

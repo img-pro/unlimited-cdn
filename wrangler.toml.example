@@ -1,7 +1,7 @@
-# Bandwidth Saver Worker - Self-Hosted Configuration
+# Edge Image Proxy - Configuration
 #
-# This worker caches WordPress images in Cloudflare R2 and serves them globally.
-# No external dependencies - just R2 storage and your Cloudflare account.
+# Self-hosted image CDN powered by Cloudflare Workers and R2.
+# Cache and serve images from any origin with zero egress fees.
 #
 # SETUP:
 #   1. Copy this file: cp wrangler.toml.example wrangler.toml
@@ -21,7 +21,7 @@ compatibility_flags = ["nodejs_compat"]
 account_id = "YOUR_ACCOUNT_ID"
 
 # =============================================================================
-# CDN DOMAIN - Where browsers request images from
+# CDN DOMAIN - Your edge endpoint where browsers request images
 # =============================================================================
 # pattern: Your CDN subdomain (e.g., cdn.example.com, images.example.com)
 # zone_name: The Cloudflare zone (your root domain, must be in your account)
@@ -35,25 +35,24 @@ binding = "R2"
 bucket_name = "bandwidth-saver-cache"
 
 # =============================================================================
-# ORIGIN DOMAINS - Your WordPress site(s) that images are fetched FROM
+# ORIGIN SERVERS - Where images are fetched FROM
 # =============================================================================
 # URL format: https://CDN_DOMAIN/ORIGIN_DOMAIN/path/to/image.jpg
-# Example:    https://cdn.example.com/example.com/wp-content/uploads/photo.jpg
+# Example:    https://cdn.example.com/origin.com/images/photo.jpg
 #                     └─────┬───────┘ └────┬────┘
-#                      CDN domain    Origin domain
+#                      CDN domain    Origin server
 
 [vars]
-# ORIGIN_MODE: Which sites can use this CDN
+# ORIGIN_MODE: Which origins can use this CDN
 #   "list" (recommended) - Only allow domains in ALLOWED_ORIGINS
-#   "open"               - Allow any domain (testing only)
+#   "open"               - Allow any domain (development only)
 ORIGIN_MODE = "list"
 
-# ALLOWED_ORIGINS: Your WordPress site domain(s)
-# These are the domains the CDN will fetch images FROM
+# ALLOWED_ORIGINS: Origin server domain(s) to cache images from
 #
 # Examples:
-#   Single site:    "example.com"
-#   With www:       "example.com,www.example.com"
+#   Single origin:  "example.com"
+#   Multiple:       "example.com,www.example.com,blog.example.com"
 #   Wildcard:       "*.example.com" (subdomains only, NOT example.com itself)
 #
 ALLOWED_ORIGINS = "example.com,www.example.com"
