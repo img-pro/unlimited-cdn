@@ -49,7 +49,7 @@ ORIGIN_MODE = "list"
 #   With subdomain: "example.com,www.example.com,blog.example.com"
 #   Wildcard:       "*.example.com" (all subdomains, but NOT example.com itself)
 #
-ALLOWED_ORIGINS = "YOUR_WORDPRESS_DOMAIN.com,www.YOUR_WORDPRESS_DOMAIN.com"
+ALLOWED_ORIGINS = "YOUR_DOMAIN.com,www.YOUR_DOMAIN.com"
 
 # BLOCKED_ORIGINS: Domains to always reject (optional, leave empty)
 # Use "*" as emergency kill switch to block all traffic

@@ -44,8 +44,7 @@ Edit `wrangler.toml` and replace these values:
 | Placeholder | Replace with | Example |
 |-------------|--------------|---------|
 | `YOUR_ACCOUNT_ID` | Your Cloudflare account ID | `abc123def456` |
-| `YOUR_DOMAIN.com` | Your CDN subdomain | `cdn.example.com` |
-| `YOUR_WORDPRESS_DOMAIN.com` | Your WordPress site domain | `example.com,www.example.com` |
+| `YOUR_DOMAIN.com` | Your domain (both CDN and WordPress origin) | `example.com` |
 
 **Finding your account ID:** Run `wrangler whoami` or look at your Cloudflare dashboard URL.
 
@@ -83,7 +82,7 @@ Cloudflare automatically configures DNS and provisions an SSL certificate. Wait 
 Open your browser and try:
 
 ```
-https://cdn.example.com/YOUR_WORDPRESS_DOMAIN.com/wp-content/uploads/any-image.jpg
+https://cdn.example.com/YOUR_DOMAIN.com/wp-content/uploads/any-image.jpg
 ```
 
 You should see the image. Check the response headers:
@@ -194,7 +193,7 @@ CDN URL:   https://cdn.example.com/example.com/wp-content/uploads/2024/photo.jpg
 **`list` (recommended for production):**
 ```toml
 ORIGIN_MODE = "list"
-ALLOWED_ORIGINS = "YOUR_WORDPRESS_DOMAIN.com,www.YOUR_WORDPRESS_DOMAIN.com"
+ALLOWED_ORIGINS = "YOUR_DOMAIN.com,www.YOUR_DOMAIN.com"
 ```
 Only specified domains can use your CDN. Others redirect to origin.
 
