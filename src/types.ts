@@ -2,10 +2,16 @@
  * Environment bindings and configuration
  */
 export interface Env {
+  // Required: R2 bucket for image caching
   R2: R2Bucket;
+
+  // Optional: KV namespace for domain records (only needed for "registered" mode)
   ORIGINS_KV?: KVNamespace;
-  BILLING_DB: D1Database;
-  USAGE_TRACKER: DurableObjectNamespace;
+
+  // Optional: Billing infrastructure (only needed for managed SaaS)
+  // Self-hosted deployments can omit these bindings
+  BILLING_DB?: D1Database;
+  USAGE_TRACKER?: DurableObjectNamespace;
   ORIGIN_MODE?: 'open' | 'list' | 'registered';
   ALLOWED_ORIGINS?: string;
   BLOCKED_ORIGINS?: string;

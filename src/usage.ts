@@ -29,6 +29,13 @@ export async function trackUsage(
   cacheHit: boolean,
   domainRecords?: DomainRecord[]
 ): Promise<void> {
+  // Skip tracking if billing infrastructure is not fully configured
+  // Both USAGE_TRACKER (DO) and BILLING_DB (D1) are required for usage tracking
+  // Self-hosted deployments typically have neither bound
+  if (!env.USAGE_TRACKER || !env.BILLING_DB) {
+    return;
+  }
+
   // Skip tracking if we don't have any site_ids
   // This happens in "open" or "list" mode where KV lookups aren't used
   if (!domainRecords || domainRecords.length === 0) {

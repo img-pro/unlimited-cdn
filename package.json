@@ -1,7 +1,7 @@
 {
-  "name": "@img/fetch-wp",
-  "version": "1.0.3",
-  "description": "Img Fetch-WP Worker - CDN with R2 caching for WordPress images",
+  "name": "bandwidth-saver-worker",
+  "version": "1.2.1",
+  "description": "Cloudflare Worker that caches WordPress images in R2",
   "main": "src/index.ts",
   "scripts": {
     "dev": "wrangler dev",
