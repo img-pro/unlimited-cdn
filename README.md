@@ -103,6 +103,19 @@ Browser requests: cdn.example.com/origin.com/images/photo.jpg
 
 ## Integration Examples
 
+### Any Platform
+
+Rewrite image URLs from:
+```
+https://origin.com/images/photo.jpg
+```
+To:
+```
+https://cdn.example.com/origin.com/images/photo.jpg
+```
+
+How you do this depends on your stack—typically a middleware, helper function, or template filter.
+
 ### WordPress
 
 Install the [Bandwidth Saver](https://wordpress.org/plugins/bandwidth-saver/) plugin for automatic URL rewriting:
@@ -129,19 +142,6 @@ export default function cloudflareLoader({ src, width, quality }) {
   return `https://cdn.example.com/${origin}${path}`;
 }
 ```
-
-### Generic (any platform)
-
-Rewrite image URLs from:
-```
-https://origin.com/images/photo.jpg
-```
-To:
-```
-https://cdn.example.com/origin.com/images/photo.jpg
-```
-
-Implementation depends on your stack—typically a middleware, helper function, or template filter.
 
 ## Configuration
 
