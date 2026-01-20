@@ -183,7 +183,7 @@ CDN URL:   https://cdn.example.com/example.com/wp-content/uploads/2024/photo.jpg
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ORIGIN_MODE` | `open` | `list` = only allow ALLOWED_ORIGINS, `open` = allow any domain |
-| `ALLOWED_ORIGINS` | - | Comma-separated domains (for `list` mode) |
+| `ALLOWED_ORIGINS` | - | Comma-separated domains for `list` mode (supports wildcards) |
 | `BLOCKED_ORIGINS` | - | Domains to always block; use `*` as kill switch |
 | `MAX_FILE_SIZE` | `50MB` | Max file size to cache; larger files redirect to origin |
 | `FETCH_TIMEOUT` | `30000` | Origin fetch timeout in milliseconds |
@@ -194,9 +194,16 @@ CDN URL:   https://cdn.example.com/example.com/wp-content/uploads/2024/photo.jpg
 **`list` (recommended for production):**
 ```toml
 ORIGIN_MODE = "list"
-ALLOWED_ORIGINS = "example.com,www.example.com"
+ALLOWED_ORIGINS = "YOUR_WORDPRESS_DOMAIN.com,www.YOUR_WORDPRESS_DOMAIN.com"
 ```
 Only specified domains can use your CDN. Others redirect to origin.
+
+**ALLOWED_ORIGINS examples:**
+| Pattern | Matches |
+|---------|---------|
+| `example.com` | `example.com` only |
+| `example.com,www.example.com` | Both domains |
+| `*.example.com` | All subdomains (but NOT `example.com` itself) |
 
 **`open` (for testing):**
 ```toml
