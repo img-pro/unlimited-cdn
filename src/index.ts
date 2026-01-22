@@ -22,7 +22,7 @@
 
 import type { Env, LogEntry } from './types';
 import { parseUrl, validateOrigin, isImageContentType, isMediaContentType, validateUrlForFetch } from './validation';
-import { fetchMediaFromOrigin, validateResponseSize } from './origin';
+import { fetchMediaFromOrigin, validateResponseSize, createSizeLimitedStream } from './origin';
 import {
   getFromCache,
   getFromCacheWithRange,
@@ -378,7 +378,30 @@ export default {
 
       // STREAMING: Split the response body into two streams
       // One for caching to R2, one for responding to the client
-      const [cacheStream, responseStream] = response.body.tee();
+      let cacheStream: ReadableStream<Uint8Array>;
+      let responseStream: ReadableStream<Uint8Array>;
+
+      if (contentLength) {
+        // Known size from Content-Length - tee directly
+        [cacheStream, responseStream] = response.body.tee();
+
+        // Track usage immediately (we know the size)
+        trackUsage(env, ctx, parsed.domain, contentLength, false, validation.domain_records);
+      } else {
+        // Chunked encoding - wrap with size limiting before tee
+        // This enforces MAX_FILE_SIZE even without Content-Length header
+        const { stream: limitedStream, byteCount } = createSizeLimitedStream(response.body, maxSize);
+        [cacheStream, responseStream] = limitedStream.tee();
+
+        // Track usage after stream completes (we'll know the final size then)
+        ctx.waitUntil(
+          byteCount.then(bytes => {
+            trackUsage(env, ctx, parsed.domain, bytes, false, validation.domain_records);
+          }).catch(() => {
+            // Size limit exceeded - usage not tracked (request failed anyway)
+          })
+        );
+      }
 
       // Store in R2 using stream (background, non-blocking)
       ctx.waitUntil(
@@ -396,12 +419,6 @@ export default {
       );
 
       addLog('Storing in R2', 'streaming (background)');
-
-      // Track usage (bytes transferred)
-      // For streaming, we use Content-Length if available
-      if (contentLength) {
-        trackUsage(env, ctx, parsed.domain, contentLength, false, validation.domain_records);
-      }
 
       // Return streaming response to client
       // Note: For cache miss, we serve full file - next request will hit cache and support ranges

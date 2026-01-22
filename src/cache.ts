@@ -51,6 +51,7 @@ export async function handleHeadRequest(
       headers: {
         'Content-Type': cached.httpMetadata?.contentType || 'application/octet-stream',
         'Content-Length': cached.size.toString(),
+        'Accept-Ranges': 'bytes',
         'ETag': cached.etag,
         'Last-Modified': cached.uploaded.toUTCString(),
         'Cache-Control': 'public, max-age=31536000, immutable',

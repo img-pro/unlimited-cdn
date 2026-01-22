@@ -102,12 +102,3 @@ export function buildContentRangeHeader(
   return `bytes ${start}-${end}/${totalSize}`;
 }
 
-/**
- * Convert RangeInfo to R2 range option format
- */
-export function toR2Range(range: RangeInfo): { offset: number; length: number } {
-  return {
-    offset: range.start,
-    length: range.length,
-  };
-}

@@ -293,6 +293,7 @@ export function validateResponseSize(
   if (!contentLength) {
     // No Content-Length header - allow but size unknown
     // Chunked transfer encoding won't have this header
+    // Size will be enforced by createSizeLimitedStream() during streaming
     return { valid: true, size: null };
   }
 
@@ -311,4 +312,56 @@ export function validateResponseSize(
   }
 
   return { valid: true, size };
+}
+
+/**
+ * Create a size-limited transform stream
+ *
+ * Wraps a ReadableStream and enforces a maximum size limit.
+ * If the stream exceeds maxSize, it aborts with an error.
+ * This enables size enforcement for chunked transfer encoding
+ * where Content-Length is not available upfront.
+ *
+ * @param stream - The source ReadableStream
+ * @param maxSize - Maximum allowed size in bytes
+ * @returns Object with wrapped stream and a promise that resolves to final byte count
+ */
+export function createSizeLimitedStream(
+  stream: ReadableStream<Uint8Array>,
+  maxSize: number
+): {
+  stream: ReadableStream<Uint8Array>;
+  byteCount: Promise<number>;
+} {
+  let totalBytes = 0;
+  let resolveByteCount: (count: number) => void;
+  let rejectByteCount: (error: Error) => void;
+
+  const byteCountPromise = new Promise<number>((resolve, reject) => {
+    resolveByteCount = resolve;
+    rejectByteCount = reject;
+  });
+
+  const transformStream = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      totalBytes += chunk.byteLength;
+
+      if (totalBytes > maxSize) {
+        const error = new Error(`Stream exceeded max size: ${totalBytes} bytes (max ${maxSize} bytes)`);
+        rejectByteCount(error);
+        controller.error(error);
+        return;
+      }
+
+      controller.enqueue(chunk);
+    },
+    flush() {
+      resolveByteCount(totalBytes);
+    },
+  });
+
+  return {
+    stream: stream.pipeThrough(transformStream),
+    byteCount: byteCountPromise,
+  };
 }
