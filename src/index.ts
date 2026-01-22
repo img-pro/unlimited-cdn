@@ -378,30 +378,22 @@ export default {
 
       // STREAMING: Split the response body into two streams
       // One for caching to R2, one for responding to the client
-      let cacheStream: ReadableStream<Uint8Array>;
-      let responseStream: ReadableStream<Uint8Array>;
+      //
+      // Always use size-limited stream for defense-in-depth:
+      // - Content-Length can be spoofed (send small header, stream large body)
+      // - HTTP/2+ framing may not enforce Content-Length boundaries
+      // - Provides accurate byte counting for usage tracking
+      const { stream: limitedStream, byteCount } = createSizeLimitedStream(response.body, maxSize);
+      const [cacheStream, responseStream] = limitedStream.tee();
 
-      if (contentLength) {
-        // Known size from Content-Length - tee directly
-        [cacheStream, responseStream] = response.body.tee();
-
-        // Track usage immediately (we know the size)
-        trackUsage(env, ctx, parsed.domain, contentLength, false, validation.domain_records);
-      } else {
-        // Chunked encoding - wrap with size limiting before tee
-        // This enforces MAX_FILE_SIZE even without Content-Length header
-        const { stream: limitedStream, byteCount } = createSizeLimitedStream(response.body, maxSize);
-        [cacheStream, responseStream] = limitedStream.tee();
-
-        // Track usage after stream completes (we'll know the final size then)
-        ctx.waitUntil(
-          byteCount.then(bytes => {
-            trackUsage(env, ctx, parsed.domain, bytes, false, validation.domain_records);
-          }).catch(() => {
-            // Size limit exceeded - usage not tracked (request failed anyway)
-          })
-        );
-      }
+      // Track usage after stream completes (actual bytes, not Content-Length)
+      ctx.waitUntil(
+        byteCount.then(bytes => {
+          trackUsage(env, ctx, parsed.domain, bytes, false, validation.domain_records);
+        }).catch(() => {
+          // Size limit exceeded - usage not tracked (request failed anyway)
+        })
+      );
 
       // Store in R2 using stream (background, non-blocking)
       ctx.waitUntil(
