@@ -26,6 +26,7 @@ import { fetchMediaFromOrigin, validateResponseSize, createSizeLimitedStream } f
 import {
   getFromCache,
   getFromCacheWithRange,
+  getCacheHead,
   handleHeadRequest,
   handleConditionalRequest,
   storeInCacheStream,
@@ -101,10 +102,42 @@ export default {
         return errorResponse('Method not allowed', 405);
       }
 
-      // Run validation and cache check in parallel for better performance
-      const [validation, cached] = await Promise.all([
+      // Check for Range header early - determines our cache strategy
+      const rangeHeader = request.headers.get('Range');
+
+      // Parse standard ranges early (bytes=X-Y where both X and Y are specified)
+      // This allows us to fetch metadata and range data in parallel
+      let standardRangeStart: number | null = null;
+      let standardRangeEnd: number | null = null;
+      if (rangeHeader && rangeHeader.startsWith('bytes=')) {
+        const match = rangeHeader.match(/^bytes=(\d+)-(\d+)$/);
+        if (match) {
+          standardRangeStart = parseInt(match[1], 10);
+          standardRangeEnd = parseInt(match[2], 10);
+        }
+      }
+      const isStandardRange = standardRangeStart !== null && standardRangeEnd !== null;
+
+      // Run validation and cache operations in parallel
+      // For standard range requests: fetch HEAD (metadata) AND range data in parallel
+      // For other range requests: just HEAD (then fetch range after)
+      // For full requests: get the full object
+      const [validation, cacheResult, rangeData] = await Promise.all([
         validateOrigin(parsed.domain, env),
-        parsed.forceReprocess ? Promise.resolve(null) : getFromCache(env, parsed.cacheKey),
+        parsed.forceReprocess
+          ? Promise.resolve(null)
+          : rangeHeader
+            ? getCacheHead(env, parsed.cacheKey)  // Range request: get metadata
+            : getFromCache(env, parsed.cacheKey), // Full request: get full object
+        // For standard ranges, also fetch the range data in parallel
+        (parsed.forceReprocess || !isStandardRange)
+          ? Promise.resolve(null)
+          : getFromCacheWithRange(env, parsed.cacheKey, {
+              start: standardRangeStart!,
+              end: standardRangeEnd!,
+              length: standardRangeEnd! - standardRangeStart! + 1,
+              isPartial: true,
+            }),
       ]);
 
       addLog('Origin validation', `${validation.reason} (source: ${validation.source})`);
@@ -126,11 +159,12 @@ export default {
         });
       }
 
-      // Check R2 cache result
-      if (cached) {
+      // Check cache result
+      if (cacheResult) {
         addLog('Cache HIT', parsed.cacheKey);
 
-        const cachedContentType = (cached.httpMetadata?.contentType || '').toLowerCase();
+        // cacheResult is R2ObjectBody for full requests, R2Object for range requests (HEAD)
+        const cachedContentType = (cacheResult.httpMetadata?.contentType || '').toLowerCase();
 
         // Validate cached content is supported media type
         // (protects against previously cached HTML/garbage)
@@ -154,7 +188,7 @@ export default {
         }
 
         // Check ETag for conditional request (304 Not Modified)
-        const conditionalResponse = handleConditionalRequest(request, cached.etag);
+        const conditionalResponse = handleConditionalRequest(request, cacheResult.etag);
         if (conditionalResponse) {
           addLog('Conditional request', '304 Not Modified');
           // Track usage (cache hit with 0 bytes - no body transferred)
@@ -162,12 +196,11 @@ export default {
           return conditionalResponse;
         }
 
-        const contentType = cached.httpMetadata?.contentType || 'application/octet-stream';
-        const metadata = cached.customMetadata || {};
-        const totalSize = cached.size;
+        const contentType = cacheResult.httpMetadata?.contentType || 'application/octet-stream';
+        const metadata = cacheResult.customMetadata || {};
+        const totalSize = cacheResult.size;
 
         // Parse Range header for partial content support (video/audio seeking)
-        const rangeHeader = request.headers.get('Range');
         const rangeInfo = rangeHeader ? parseRangeHeader(rangeHeader, totalSize) : null;
 
         // Invalid range = 416 Range Not Satisfiable
@@ -186,31 +219,40 @@ export default {
         // If view parameter is set, return HTML viewer (images only)
         // SECURITY: Only allow in debug mode to prevent information disclosure
         if (parsed.viewImage && env.DEBUG === 'true' && isImageContentType(contentType)) {
-          const imageData = await cached.arrayBuffer();
-          const totalTime = Date.now() - startTime;
-          addLog('Generating HTML viewer', `${imageData.byteLength} bytes in ${totalTime}ms`);
+          // For view mode, we need the full object
+          const fullObject = rangeHeader
+            ? await getFromCache(env, parsed.cacheKey)
+            : cacheResult as R2ObjectBody;
 
-          return createHtmlViewer({
-            imageData,
-            contentType,
-            status: 'cached',
-            imageSize: imageData.byteLength,
-            sourceUrl: parsed.sourceUrl,
-            cdnUrl: request.url.split('?')[0],
-            cacheKey: parsed.cacheKey,
-            cachedAt: metadata.cachedAt,
-            processingTime: totalTime,
-            logs,
-            env
-          });
+          if (fullObject && 'body' in fullObject) {
+            const imageData = await fullObject.arrayBuffer();
+            const totalTime = Date.now() - startTime;
+            addLog('Generating HTML viewer', `${imageData.byteLength} bytes in ${totalTime}ms`);
+
+            return createHtmlViewer({
+              imageData,
+              contentType,
+              status: 'cached',
+              imageSize: imageData.byteLength,
+              sourceUrl: parsed.sourceUrl,
+              cdnUrl: request.url.split('?')[0],
+              cacheKey: parsed.cacheKey,
+              cachedAt: metadata.cachedAt,
+              processingTime: totalTime,
+              logs,
+              env
+            });
+          }
         }
 
         // Handle range request for cached content (partial content for video/audio seeking)
         if (rangeInfo?.isPartial) {
           addLog('Range request', `bytes ${rangeInfo.start}-${rangeInfo.end}/${totalSize}`);
 
-          // Fetch just the requested range from R2
-          const partialObject = await getFromCacheWithRange(env, parsed.cacheKey, rangeInfo);
+          // For standard ranges, we already fetched in parallel. Otherwise fetch now.
+          const partialObject = (isStandardRange && rangeData)
+            ? rangeData
+            : await getFromCacheWithRange(env, parsed.cacheKey, rangeInfo);
 
           if (!partialObject) {
             // Shouldn't happen, but handle gracefully
@@ -224,7 +266,7 @@ export default {
             });
           }
 
-          addLog('Serving partial', `${rangeInfo.length} bytes`);
+          addLog('Serving partial', `${rangeInfo.length} bytes${isStandardRange ? ' (parallel fetch)' : ''}`);
 
           // Track actual bytes transferred (partial)
           trackUsage(env, ctx, parsed.domain, rangeInfo.length, true, validation.domain_records);
@@ -237,8 +279,8 @@ export default {
               'Content-Range': buildContentRangeHeader(rangeInfo.start, rangeInfo.end, totalSize),
               'Accept-Ranges': 'bytes',
               'Cache-Control': 'public, max-age=31536000, immutable',
-              'ETag': cached.etag,
-              'Last-Modified': cached.uploaded.toUTCString(),
+              'ETag': cacheResult.etag,
+              'Last-Modified': cacheResult.uploaded.toUTCString(),
               'X-ImgPro-Status': 'hit',
               'X-ImgPro-Cached-At': metadata.cachedAt || '',
               ...getCORSHeaders(),
@@ -247,20 +289,35 @@ export default {
         }
 
         // Full content response (no range or range covers entire file)
-        addLog('Serving media', `${cached.size} bytes, ${contentType}`);
+        // For full requests, cacheResult already has the body
+        const fullObject = cacheResult as R2ObjectBody;
+
+        if (!('body' in fullObject)) {
+          // This shouldn't happen for non-range requests, but handle gracefully
+          return new Response(null, {
+            status: 302,
+            headers: {
+              'Location': parsed.sourceUrl,
+              'Cache-Control': 'no-store, no-cache, must-revalidate',
+              ...getCORSHeaders(),
+            },
+          });
+        }
+
+        addLog('Serving media', `${fullObject.size} bytes, ${contentType}`);
 
         // Track usage (cache hit)
-        trackUsage(env, ctx, parsed.domain, cached.size, true, validation.domain_records);
+        trackUsage(env, ctx, parsed.domain, fullObject.size, true, validation.domain_records);
 
-        return new Response(cached.body, {
+        return new Response(fullObject.body, {
           status: 200,
           headers: {
             'Content-Type': contentType,
-            'Content-Length': cached.size.toString(),
+            'Content-Length': fullObject.size.toString(),
             'Accept-Ranges': 'bytes',
             'Cache-Control': 'public, max-age=31536000, immutable',
-            'ETag': cached.etag,
-            'Last-Modified': cached.uploaded.toUTCString(),
+            'ETag': fullObject.etag,
+            'Last-Modified': fullObject.uploaded.toUTCString(),
             'X-ImgPro-Status': 'hit',
             'X-ImgPro-Cached-At': metadata.cachedAt || '',
             ...getCORSHeaders(),
