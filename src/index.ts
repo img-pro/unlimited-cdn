@@ -17,24 +17,26 @@
  *
  * No separate R2 public bucket domain needed - the worker IS the CDN.
  *
- * @version 1.2.1
+ * @version 1.3.0
  */
 
 import type { Env, LogEntry } from './types';
-import { parseUrl, validateOrigin, isImageContentType, validateUrlForFetch } from './validation';
-import { fetchImageFromOrigin, fetchImageData } from './origin';
+import { parseUrl, validateOrigin, isImageContentType, isMediaContentType, validateUrlForFetch } from './validation';
+import { fetchMediaFromOrigin, validateResponseSize } from './origin';
 import {
   getFromCache,
+  getFromCacheWithRange,
   handleHeadRequest,
   handleConditionalRequest,
-  storeInCache,
+  storeInCacheStream,
 } from './cache';
+import { parseRangeHeader, buildContentRangeHeader } from './range';
 import { createHtmlViewer } from './viewer';
 import { createStatsResponse, createLogger } from './analytics';
 import { errorResponse, getCORSHeaders, formatBytes, parseFileSize } from './utils';
 import { trackUsage } from './usage';
 
-const VERSION = '1.2.1';
+const VERSION = '1.3.0';
 
 // Export Durable Object for usage tracking
 export { SiteUsageTracker } from './usage-tracker';
@@ -130,9 +132,9 @@ export default {
 
         const cachedContentType = (cached.httpMetadata?.contentType || '').toLowerCase();
 
-        // Validate cached content is actually an image
+        // Validate cached content is supported media type
         // (protects against previously cached HTML/garbage)
-        if (!cachedContentType.startsWith('image/')) {
+        if (!isMediaContentType(cachedContentType)) {
           addLog('Invalid cached content', `${cachedContentType} - deleting and redirecting`);
           // Delete invalid cached content in background (don't block response)
           ctx.waitUntil(env.R2.delete(parsed.cacheKey).catch(e => {
@@ -160,19 +162,37 @@ export default {
           return conditionalResponse;
         }
 
-        const imageContentType = cached.httpMetadata?.contentType || 'image/jpeg';
+        const contentType = cached.httpMetadata?.contentType || 'application/octet-stream';
         const metadata = cached.customMetadata || {};
+        const totalSize = cached.size;
 
-        // If view parameter is set, return HTML viewer
+        // Parse Range header for partial content support (video/audio seeking)
+        const rangeHeader = request.headers.get('Range');
+        const rangeInfo = rangeHeader ? parseRangeHeader(rangeHeader, totalSize) : null;
+
+        // Invalid range = 416 Range Not Satisfiable
+        if (rangeHeader && !rangeInfo) {
+          addLog('Invalid range', `${rangeHeader} for size ${totalSize}`);
+          return new Response('Range Not Satisfiable', {
+            status: 416,
+            headers: {
+              'Content-Range': `bytes */${totalSize}`,
+              'Accept-Ranges': 'bytes',
+              ...getCORSHeaders(),
+            },
+          });
+        }
+
+        // If view parameter is set, return HTML viewer (images only)
         // SECURITY: Only allow in debug mode to prevent information disclosure
-        if (parsed.viewImage && env.DEBUG === 'true') {
+        if (parsed.viewImage && env.DEBUG === 'true' && isImageContentType(contentType)) {
           const imageData = await cached.arrayBuffer();
           const totalTime = Date.now() - startTime;
           addLog('Generating HTML viewer', `${imageData.byteLength} bytes in ${totalTime}ms`);
 
           return createHtmlViewer({
             imageData,
-            contentType: imageContentType,
+            contentType,
             status: 'cached',
             imageSize: imageData.byteLength,
             sourceUrl: parsed.sourceUrl,
@@ -185,8 +205,49 @@ export default {
           });
         }
 
-        // Return the actual image with long cache headers
-        addLog('Serving image', `${cached.size} bytes, ${imageContentType}`);
+        // Handle range request for cached content (partial content for video/audio seeking)
+        if (rangeInfo?.isPartial) {
+          addLog('Range request', `bytes ${rangeInfo.start}-${rangeInfo.end}/${totalSize}`);
+
+          // Fetch just the requested range from R2
+          const partialObject = await getFromCacheWithRange(env, parsed.cacheKey, rangeInfo);
+
+          if (!partialObject) {
+            // Shouldn't happen, but handle gracefully
+            return new Response(null, {
+              status: 302,
+              headers: {
+                'Location': parsed.sourceUrl,
+                'Cache-Control': 'no-store, no-cache, must-revalidate',
+                ...getCORSHeaders(),
+              },
+            });
+          }
+
+          addLog('Serving partial', `${rangeInfo.length} bytes`);
+
+          // Track actual bytes transferred (partial)
+          trackUsage(env, ctx, parsed.domain, rangeInfo.length, true, validation.domain_records);
+
+          return new Response(partialObject.body, {
+            status: 206,
+            headers: {
+              'Content-Type': contentType,
+              'Content-Length': rangeInfo.length.toString(),
+              'Content-Range': buildContentRangeHeader(rangeInfo.start, rangeInfo.end, totalSize),
+              'Accept-Ranges': 'bytes',
+              'Cache-Control': 'public, max-age=31536000, immutable',
+              'ETag': cached.etag,
+              'Last-Modified': cached.uploaded.toUTCString(),
+              'X-ImgPro-Status': 'hit',
+              'X-ImgPro-Cached-At': metadata.cachedAt || '',
+              ...getCORSHeaders(),
+            },
+          });
+        }
+
+        // Full content response (no range or range covers entire file)
+        addLog('Serving media', `${cached.size} bytes, ${contentType}`);
 
         // Track usage (cache hit)
         trackUsage(env, ctx, parsed.domain, cached.size, true, validation.domain_records);
@@ -194,8 +255,9 @@ export default {
         return new Response(cached.body, {
           status: 200,
           headers: {
-            'Content-Type': imageContentType,
+            'Content-Type': contentType,
             'Content-Length': cached.size.toString(),
+            'Accept-Ranges': 'bytes',
             'Cache-Control': 'public, max-age=31536000, immutable',
             'ETag': cached.etag,
             'Last-Modified': cached.uploaded.toUTCString(),
@@ -226,7 +288,7 @@ export default {
       };
 
       // Fetch with block detection
-      const fetchResult = await fetchImageFromOrigin(parsed.sourceUrl, env, request, undefined, validateRedirect);
+      const fetchResult = await fetchMediaFromOrigin(parsed.sourceUrl, env, request, undefined, validateRedirect);
       const response = fetchResult.response;
 
       // Check if origin blocked us (WAF, rate limit, challenge page)
@@ -262,10 +324,10 @@ export default {
 
       addLog('Origin fetch success', `HTTP ${response.status}`);
 
-      // Validate content type - if not an image, redirect to origin
+      // Validate content type - must be supported media type
       const contentType = response.headers.get('Content-Type') || '';
-      if (!isImageContentType(contentType)) {
-        addLog('Not an image', `${contentType} - redirecting to origin`);
+      if (!isMediaContentType(contentType)) {
+        addLog('Not supported media', `${contentType} - redirecting to origin`);
         return new Response(null, {
           status: 302,
           headers: {
@@ -279,17 +341,14 @@ export default {
 
       addLog('Content type validated', contentType);
 
-      // Parse max file size
-      const maxSize = parseFileSize(env.MAX_FILE_SIZE || '50MB');
+      // Parse max file size (default 500MB for video support)
+      const maxSize = parseFileSize(env.MAX_FILE_SIZE || '500MB');
 
-      // Fetch image data with size validation
-      let imageData: ArrayBuffer;
-      try {
-        imageData = await fetchImageData(response, maxSize);
-        addLog('Image data fetched', `${formatBytes(imageData.byteLength)}`);
-      } catch (error) {
-        // File too large - redirect to origin so user gets the full file directly
-        addLog('File too large', `${error instanceof Error ? error.message : 'Unknown'} - redirecting to origin`);
+      // Validate size via Content-Length header (no buffering)
+      const sizeValidation = validateResponseSize(response, maxSize);
+
+      if (!sizeValidation.valid) {
+        addLog('File too large', `${sizeValidation.reason} - redirecting to origin`);
         return new Response(null, {
           status: 302,
           headers: {
@@ -301,56 +360,59 @@ export default {
         });
       }
 
-      // Store in R2 (background - don't block response)
-      ctx.waitUntil(storeInCache(
-        env,
-        parsed.cacheKey,
-        imageData,
-        contentType,
-        parsed.sourceUrl,
-        parsed.domain
-      ).catch(e => {
-        console.error('Failed to store in cache:', e);
-      }));
+      const contentLength = sizeValidation.size;
+      addLog('Size validated', contentLength ? `${formatBytes(contentLength)}` : 'unknown (chunked)');
 
-      const cdnUrl = request.url.split('?')[0]; // Current URL without query params
-      addLog('Storing in R2', `${formatBytes(imageData.byteLength)} (background)`);
-
-      // If view parameter is set, return HTML viewer
-      // SECURITY: Only allow in debug mode to prevent information disclosure
-      // NOTE: Debug viewer intentionally skips trackUsage() - diagnostic requests
-      // shouldn't count toward billing metrics or inflate production statistics
-      if (parsed.viewImage && env.DEBUG === 'true') {
-        const totalTime = Date.now() - startTime;
-        addLog('Generating HTML viewer', `Processing complete in ${totalTime}ms`);
-
-        return createHtmlViewer({
-          imageData,
-          contentType,
-          status: 'fetched',
-          imageSize: imageData.byteLength,
-          sourceUrl: parsed.sourceUrl,
-          cdnUrl,
-          cacheKey: parsed.cacheKey,
-          cachedAt: new Date().toISOString(),
-          processingTime: totalTime,
-          logs,
-          env
+      // Check if response body exists
+      if (!response.body) {
+        addLog('No response body', 'redirecting to origin');
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': parsed.sourceUrl,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            ...getCORSHeaders(),
+          },
         });
       }
 
-      // Return the actual image (just fetched and cached)
-      // Note: No ETag on cache miss - R2 will provide ETag on subsequent cache hits
-      addLog('Serving image', `${formatBytes(imageData.byteLength)}, ${contentType}`);
+      // STREAMING: Split the response body into two streams
+      // One for caching to R2, one for responding to the client
+      const [cacheStream, responseStream] = response.body.tee();
 
-      // Track usage (cache miss)
-      trackUsage(env, ctx, parsed.domain, imageData.byteLength, false, validation.domain_records);
+      // Store in R2 using stream (background, non-blocking)
+      ctx.waitUntil(
+        storeInCacheStream(
+          env,
+          parsed.cacheKey,
+          cacheStream,
+          contentType,
+          contentLength,
+          parsed.sourceUrl,
+          parsed.domain
+        ).catch(e => {
+          console.error('Failed to store in cache:', e);
+        })
+      );
 
-      return new Response(imageData, {
+      addLog('Storing in R2', 'streaming (background)');
+
+      // Track usage (bytes transferred)
+      // For streaming, we use Content-Length if available
+      if (contentLength) {
+        trackUsage(env, ctx, parsed.domain, contentLength, false, validation.domain_records);
+      }
+
+      // Return streaming response to client
+      // Note: For cache miss, we serve full file - next request will hit cache and support ranges
+      addLog('Serving media', `streaming, ${contentType}`);
+
+      return new Response(responseStream, {
         status: 200,
         headers: {
           'Content-Type': contentType,
-          'Content-Length': imageData.byteLength.toString(),
+          ...(contentLength ? { 'Content-Length': contentLength.toString() } : {}),
+          'Accept-Ranges': 'bytes',
           'Cache-Control': 'public, max-age=31536000, immutable',
           'X-ImgPro-Status': 'miss',
           ...getCORSHeaders(),

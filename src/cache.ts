@@ -1,38 +1,13 @@
 /**
- * R2 cache operations with streaming support
+ * R2 cache operations with streaming and range request support for media files
  */
 
 import type { Env } from './types';
+import type { RangeInfo } from './range';
 import { getCORSHeaders } from './utils';
 
 /**
- * Store image in R2 cache with streaming support
- */
-export async function storeInCache(
-  env: Env,
-  cacheKey: string,
-  imageData: ArrayBuffer | ReadableStream,
-  contentType: string,
-  sourceUrl: string,
-  domain: string
-): Promise<void> {
-  const cachedAt = new Date().toISOString();
-
-  await env.R2.put(cacheKey, imageData, {
-    httpMetadata: {
-      contentType: contentType,
-      cacheControl: 'public, max-age=31536000, immutable',
-    },
-    customMetadata: {
-      sourceUrl: sourceUrl,
-      domain: domain,
-      cachedAt: cachedAt,
-    },
-  });
-}
-
-/**
- * Get cached image from R2
+ * Get cached media from R2
  */
 export async function getFromCache(
   env: Env,
@@ -52,7 +27,7 @@ export async function getCacheHead(
 }
 
 /**
- * Delete image from cache
+ * Delete media from cache
  */
 export async function deleteFromCache(
   env: Env,
@@ -62,7 +37,7 @@ export async function deleteFromCache(
 }
 
 /**
- * Handle HEAD request for cached image
+ * Handle HEAD request for cached media
  */
 export async function handleHeadRequest(
   env: Env,
@@ -74,7 +49,7 @@ export async function handleHeadRequest(
     return new Response(null, {
       status: 200,
       headers: {
-        'Content-Type': cached.httpMetadata?.contentType || 'image/jpeg',
+        'Content-Type': cached.httpMetadata?.contentType || 'application/octet-stream',
         'Content-Length': cached.size.toString(),
         'ETag': cached.etag,
         'Last-Modified': cached.uploaded.toUTCString(),
@@ -113,4 +88,63 @@ export function handleConditionalRequest(
   }
 
   return null;
+}
+
+/**
+ * Get cached object with optional range
+ *
+ * @param env - Environment bindings
+ * @param cacheKey - Cache key
+ * @param range - Optional range info for partial content
+ */
+export async function getFromCacheWithRange(
+  env: Env,
+  cacheKey: string,
+  range?: RangeInfo
+): Promise<R2ObjectBody | null> {
+  if (range) {
+    return await env.R2.get(cacheKey, {
+      range: {
+        offset: range.start,
+        length: range.length,
+      },
+    });
+  }
+  return await env.R2.get(cacheKey);
+}
+
+/**
+ * Store media in cache using streaming (no memory buffering)
+ *
+ * @param env - Environment bindings
+ * @param cacheKey - Cache key
+ * @param body - ReadableStream from origin response
+ * @param contentType - MIME type
+ * @param contentLength - Size in bytes (optional, for metadata)
+ * @param sourceUrl - Original source URL
+ * @param domain - Origin domain
+ */
+export async function storeInCacheStream(
+  env: Env,
+  cacheKey: string,
+  body: ReadableStream,
+  contentType: string,
+  contentLength: number | null,
+  sourceUrl: string,
+  domain: string
+): Promise<void> {
+  const cachedAt = new Date().toISOString();
+
+  await env.R2.put(cacheKey, body, {
+    httpMetadata: {
+      contentType: contentType,
+      cacheControl: 'public, max-age=31536000, immutable',
+    },
+    customMetadata: {
+      sourceUrl: sourceUrl,
+      domain: domain,
+      cachedAt: cachedAt,
+      ...(contentLength ? { contentLength: contentLength.toString() } : {}),
+    },
+  });
 }

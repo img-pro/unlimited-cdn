@@ -21,7 +21,7 @@ import { validateUrlForFetch } from './validation';
  */
 const FALLBACK_HEADERS = {
   'User-Agent': 'ImgPro/1.0 (+https://img.pro/cdn)',
-  'Accept': 'image/*',
+  'Accept': 'image/*, video/*, audio/*, application/vnd.apple.mpegurl',
 } as const;
 
 /**
@@ -98,8 +98,14 @@ export interface FetchResult {
  *
  * WAFs often return 200 OK with HTML challenge pages.
  * This detects common patterns to avoid caching garbage.
+ *
+ * @param response - The fetch response
+ * @param expectedCategory - Expected media category ('image' | 'video' | 'audio' | 'media')
  */
-function detectBlockedResponse(response: Response, expectedType: 'image'): {
+function detectBlockedResponse(
+  response: Response,
+  expectedCategory: 'image' | 'video' | 'audio' | 'media' = 'media'
+): {
   blocked: boolean;
   reason?: string;
 } {
@@ -116,32 +122,39 @@ function detectBlockedResponse(response: Response, expectedType: 'image'): {
     return { blocked: true, reason: 'rate_limited' };
   }
 
-  // If we expected an image, validate content-type
-  if (expectedType === 'image') {
-    // HTML response = challenge/block page
-    if (contentType.includes('text/html')) {
-      // Small HTML responses are almost certainly challenge/block pages
-      if (contentLength && parseInt(contentLength, 10) < 50000) {
-        return { blocked: true, reason: 'html_challenge_page' };
-      }
-      return { blocked: true, reason: 'html_instead_of_image' };
+  // HTML response = challenge/block page (for any media type)
+  if (contentType.includes('text/html')) {
+    if (contentLength && parseInt(contentLength, 10) < 50000) {
+      return { blocked: true, reason: 'html_challenge_page' };
     }
+    return { blocked: true, reason: 'html_instead_of_media' };
+  }
 
-    // Any text/* response is wrong for images
-    if (contentType.startsWith('text/')) {
-      return { blocked: true, reason: 'text_instead_of_image' };
-    }
+  // Any text/* response is wrong for media
+  if (contentType.startsWith('text/')) {
+    return { blocked: true, reason: 'text_instead_of_media' };
+  }
 
-    // JSON response (common for API errors)
-    if (contentType.includes('application/json')) {
-      return { blocked: true, reason: 'json_instead_of_image' };
-    }
+  // JSON response (common for API errors)
+  if (contentType.includes('application/json')) {
+    return { blocked: true, reason: 'json_instead_of_media' };
+  }
 
-    // Must be image/* content-type (if present)
+  // Category-specific validation
+  if (expectedCategory === 'image') {
     if (contentType && !contentType.startsWith('image/')) {
       return { blocked: true, reason: 'non_image_content_type' };
     }
+  } else if (expectedCategory === 'video') {
+    if (contentType && !contentType.startsWith('video/')) {
+      return { blocked: true, reason: 'non_video_content_type' };
+    }
+  } else if (expectedCategory === 'audio') {
+    if (contentType && !contentType.startsWith('audio/')) {
+      return { blocked: true, reason: 'non_audio_content_type' };
+    }
   }
+  // 'media' category accepts image/*, video/*, audio/*, and HLS types
 
   return { blocked: false };
 }
@@ -237,12 +250,12 @@ export async function fetchFromOrigin(
 }
 
 /**
- * Fetch and validate image from origin
+ * Fetch and validate media from origin
  *
  * Combines fetch with block detection and content validation.
  * Returns structured result indicating success or block reason.
  */
-export async function fetchImageFromOrigin(
+export async function fetchMediaFromOrigin(
   url: string,
   env: Env,
   clientRequest?: Request,
@@ -252,7 +265,7 @@ export async function fetchImageFromOrigin(
   const response = await fetchFromOrigin(url, env, clientRequest, timeout, validateRedirect);
 
   // Detect if we got a block/challenge page
-  const blockCheck = detectBlockedResponse(response, 'image');
+  const blockCheck = detectBlockedResponse(response, 'media');
 
   return {
     response,
@@ -262,33 +275,40 @@ export async function fetchImageFromOrigin(
 }
 
 /**
- * Fetch image data as ArrayBuffer with size validation
+ * Validate response size without consuming the body
+ *
+ * For streaming, we validate Content-Length header only.
+ * The body stream is passed through without buffering.
  *
  * @param response - The fetch response
  * @param maxSize - Maximum allowed file size in bytes
- * @returns Image data as ArrayBuffer
- * @throws Error if file exceeds maxSize
+ * @returns Validation result with size if available
  */
-export async function fetchImageData(
+export function validateResponseSize(
   response: Response,
   maxSize: number
-): Promise<ArrayBuffer> {
-  // Check content-length header first if available
+): { valid: boolean; size: number | null; reason?: string } {
   const contentLength = response.headers.get('content-length');
-  if (contentLength) {
-    const size = parseInt(contentLength, 10);
-    if (!isNaN(size) && size > maxSize) {
-      throw new Error(`File too large: ${size} bytes (max ${maxSize} bytes)`);
-    }
+
+  if (!contentLength) {
+    // No Content-Length header - allow but size unknown
+    // Chunked transfer encoding won't have this header
+    return { valid: true, size: null };
   }
 
-  // Fetch the data
-  const imageData = await response.arrayBuffer();
+  const size = parseInt(contentLength, 10);
 
-  // Validate actual size (content-length can be spoofed or missing)
-  if (imageData.byteLength > maxSize) {
-    throw new Error(`File too large: ${imageData.byteLength} bytes (max ${maxSize} bytes)`);
+  if (isNaN(size)) {
+    return { valid: true, size: null };
   }
 
-  return imageData;
+  if (size > maxSize) {
+    return {
+      valid: false,
+      size,
+      reason: `File too large: ${size} bytes (max ${maxSize} bytes)`
+    };
+  }
+
+  return { valid: true, size };
 }

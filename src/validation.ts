@@ -365,17 +365,6 @@ export function validateUrlForFetch(url: string): {
 }
 
 /**
- * Validate a URL's domain (used for redirect validation)
- * Extracts domain from URL and validates it
- *
- * @deprecated Use validateUrlForFetch() for comprehensive SSRF validation
- */
-export function validateUrlDomain(url: string): { valid: boolean; domain: string | null } {
-  const result = validateUrlForFetch(url);
-  return { valid: result.valid, domain: result.domain };
-}
-
-/**
  * Check if content type is an image
  *
  * SECURITY: Uses startsWith() for proper MIME type matching instead of includes().
@@ -399,7 +388,74 @@ export function isImageContentType(contentType: string): boolean {
   return imageTypes.includes(mimeType);
 }
 
-// =============================================================================
-// REMOVED (2024-11-30): isAllowedOrigin() - deprecated legacy function
-// Use validateOrigin() instead for async mode-based origin validation
-// =============================================================================
+/**
+ * Check if content type is video
+ */
+export function isVideoContentType(contentType: string): boolean {
+  if (!contentType) return false;
+
+  const mimeType = contentType.toLowerCase().split(';')[0].trim();
+
+  const videoTypes = [
+    'video/mp4',
+    'video/webm',
+    'video/ogg',
+    'video/quicktime',
+    'video/x-matroska',
+    'video/x-m4v',
+    'video/mp2t',  // HLS segments (.ts)
+  ];
+
+  return videoTypes.includes(mimeType);
+}
+
+/**
+ * Check if content type is audio
+ */
+export function isAudioContentType(contentType: string): boolean {
+  if (!contentType) return false;
+
+  const mimeType = contentType.toLowerCase().split(';')[0].trim();
+
+  const audioTypes = [
+    'audio/mpeg',
+    'audio/ogg',
+    'audio/wav',
+    'audio/webm',
+    'audio/x-m4a',
+    'audio/mp4',
+    'audio/aac',
+    'audio/flac',
+  ];
+
+  return audioTypes.includes(mimeType);
+}
+
+/**
+ * Check if content type is HLS manifest
+ */
+export function isHLSContentType(contentType: string): boolean {
+  if (!contentType) return false;
+
+  const mimeType = contentType.toLowerCase().split(';')[0].trim();
+
+  const hlsTypes = [
+    'application/vnd.apple.mpegurl',
+    'application/x-mpegurl',
+    'audio/mpegurl',
+    'audio/x-mpegurl',
+  ];
+
+  return hlsTypes.includes(mimeType);
+}
+
+/**
+ * Check if content type is any supported media (image, video, audio, HLS)
+ */
+export function isMediaContentType(contentType: string): boolean {
+  return isImageContentType(contentType) ||
+         isVideoContentType(contentType) ||
+         isAudioContentType(contentType) ||
+         isHLSContentType(contentType);
+}
+
