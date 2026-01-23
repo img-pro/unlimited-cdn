@@ -183,7 +183,12 @@ export class SiteUsageTracker implements DurableObject {
 		// Skip if no activity since last flush
 		if (this.requests === 0) {
 			// Reset alarm for next period
-			await this.state.storage.setAlarm(Date.now() + 60000);
+			try {
+				await this.state.storage.setAlarm(Date.now() + 60000);
+			} catch (alarmErr) {
+				// Storage failing - log and hope next request triggers recovery
+				console.error('[UsageTracker] Failed to reschedule idle alarm:', alarmErr);
+			}
 			return;
 		}
 
