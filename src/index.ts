@@ -277,17 +277,11 @@ export default {
 
           addLog('Serving partial', `${rangeInfo.length} bytes${isStandardRange ? ' (parallel fetch)' : ''}`);
 
-          // Wrap body with byte counting for accurate usage tracking
-          const { stream: countedStream, byteCount } = createByteCountingStream(partialObject.body);
+          // Track requested range size (not actual bytes - for performance)
+          // Trade-off: may over-count if client disconnects early
+          trackUsage(env, ctx, parsed.domain, rangeInfo.length, true, validation.domain_records);
 
-          // Track actual bytes delivered (not requested) via waitUntil
-          ctx.waitUntil(
-            byteCount.then(bytes => {
-              trackUsage(env, ctx, parsed.domain, bytes, true, validation.domain_records);
-            })
-          );
-
-          return new Response(countedStream, {
+          return new Response(partialObject.body, {
             status: 206,
             headers: {
               'Content-Type': contentType,
@@ -333,15 +327,10 @@ export default {
           });
         }
 
-        // Wrap body with byte counting for accurate usage tracking
-        const { stream: countedStream, byteCount } = createByteCountingStream(fullObject.body);
-
-        // Track actual bytes delivered (not file size) via waitUntil
-        ctx.waitUntil(
-          byteCount.then(bytes => {
-            trackUsage(env, ctx, parsed.domain, bytes, true, validation.domain_records);
-          })
-        );
+        // Track requested size (not actual bytes - for performance)
+        // Trade-off: may over-count if client disconnects early
+        const bytesToTrack = rangeInfo ? rangeInfo.length : fullObject.size;
+        trackUsage(env, ctx, parsed.domain, bytesToTrack, true, validation.domain_records);
 
         addLog('Serving media', `${fullObject.size} bytes, ${contentType}`);
 
@@ -364,7 +353,7 @@ export default {
           responseHeaders['Content-Range'] = buildContentRangeHeader(rangeInfo.start, rangeInfo.end, totalSize);
         }
 
-        return new Response(countedStream, {
+        return new Response(fullObject.body, {
           status: rangeInfo ? 206 : 200,
           headers: responseHeaders,
         });
