@@ -41,7 +41,11 @@ const STORAGE_KEYS = {
 	REQUESTS: 'requests',
 	CACHE_HITS: 'cacheHits',
 	CACHE_MISSES: 'cacheMisses',
+	D1_FAILURES: 'd1Failures',
 } as const;
+
+// Alert threshold for consecutive D1 failures
+const D1_FAILURE_ALERT_THRESHOLD = 5;
 
 export class SiteUsageTracker implements DurableObject {
 	private state: DurableObjectState;
@@ -238,10 +242,31 @@ export class SiteUsageTracker implements DurableObject {
 				[STORAGE_KEYS.CACHE_HITS]: this.cacheHits,
 				[STORAGE_KEYS.CACHE_MISSES]: this.cacheMisses,
 			});
+			// D1 write succeeded - reset failure counter
+			await this.state.storage.put(STORAGE_KEYS.D1_FAILURES, 0);
 		} catch (err) {
-			console.error(`[UsageTracker] D1 write failed for ${flushDomain}:`, err);
+			// Track consecutive D1 failures
+			const failures = (await this.state.storage.get<number>(STORAGE_KEYS.D1_FAILURES)) || 0;
+			const newFailures = failures + 1;
+			await this.state.storage.put(STORAGE_KEYS.D1_FAILURES, newFailures);
+
+			console.error(`[UsageTracker] D1 write failed for ${flushDomain}:`, err, {
+				consecutiveFailures: newFailures,
+				accumulatedBandwidth: this.bandwidth,
+				accumulatedRequests: this.requests,
+			});
+
+			// Alert if failure threshold exceeded (indicates persistent D1 issue)
+			if (newFailures >= D1_FAILURE_ALERT_THRESHOLD) {
+				console.error(
+					`[UsageTracker] ALERT: ${newFailures} consecutive D1 failures for site:${flushSiteId} (${flushDomain}). ` +
+					`Accumulated: ${this.bandwidth} bytes, ${this.requests} requests. ` +
+					`Data preserved in DO storage, will retry on next alarm.`
+				);
+			}
+
 			// Don't modify counters - will retry on next alarm
-			// This prevents data loss if D1 or storage is temporarily unavailable
+			// This prevents data loss if D1 is temporarily unavailable
 		}
 
 		// Schedule next alarm

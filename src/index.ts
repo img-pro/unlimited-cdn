@@ -22,7 +22,7 @@
 
 import type { Env, LogEntry } from './types';
 import { parseUrl, validateOrigin, isImageContentType, isMediaContentType, validateUrlForFetch } from './validation';
-import { fetchMediaFromOrigin, validateResponseSize, createSizeLimitedStream } from './origin';
+import { fetchMediaFromOrigin, validateResponseSize, createSizeLimitedStream, createByteCountingStream } from './origin';
 import {
   getFromCache,
   getFromCacheWithRange,
@@ -277,10 +277,17 @@ export default {
 
           addLog('Serving partial', `${rangeInfo.length} bytes${isStandardRange ? ' (parallel fetch)' : ''}`);
 
-          // Track actual bytes transferred (partial)
-          trackUsage(env, ctx, parsed.domain, rangeInfo.length, true, validation.domain_records);
+          // Wrap body with byte counting for accurate usage tracking
+          const { stream: countedStream, byteCount } = createByteCountingStream(partialObject.body);
 
-          return new Response(partialObject.body, {
+          // Track actual bytes delivered (not requested) via waitUntil
+          ctx.waitUntil(
+            byteCount.then(bytes => {
+              trackUsage(env, ctx, parsed.domain, bytes, true, validation.domain_records);
+            })
+          );
+
+          return new Response(countedStream, {
             status: 206,
             headers: {
               'Content-Type': contentType,
@@ -326,10 +333,17 @@ export default {
           });
         }
 
-        addLog('Serving media', `${fullObject.size} bytes, ${contentType}`);
+        // Wrap body with byte counting for accurate usage tracking
+        const { stream: countedStream, byteCount } = createByteCountingStream(fullObject.body);
 
-        // Track usage (cache hit)
-        trackUsage(env, ctx, parsed.domain, fullObject.size, true, validation.domain_records);
+        // Track actual bytes delivered (not file size) via waitUntil
+        ctx.waitUntil(
+          byteCount.then(bytes => {
+            trackUsage(env, ctx, parsed.domain, bytes, true, validation.domain_records);
+          })
+        );
+
+        addLog('Serving media', `${fullObject.size} bytes, ${contentType}`);
 
         // If Range header was sent (even for full file like bytes=0-), return 206 with Content-Range
         // This is critical for video: browsers expect 206 to confirm range support for seeking
@@ -350,7 +364,7 @@ export default {
           responseHeaders['Content-Range'] = buildContentRangeHeader(rangeInfo.start, rangeInfo.end, totalSize);
         }
 
-        return new Response(fullObject.body, {
+        return new Response(countedStream, {
           status: rangeInfo ? 206 : 200,
           headers: responseHeaders,
         });

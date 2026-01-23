@@ -315,6 +315,67 @@ export function validateResponseSize(
 }
 
 /**
+ * Create a byte counting stream wrapper
+ *
+ * Wraps a ReadableStream to count bytes as they pass through.
+ * Does NOT enforce any size limit - use for cache hits where size
+ * was already validated during caching.
+ *
+ * Key behavior: Resolves with actual bytes delivered even if client
+ * disconnects early. This ensures accurate usage tracking.
+ *
+ * Uses direct reader/ReadableStream for minimal overhead (no TransformStream buffering).
+ *
+ * @param stream - The source ReadableStream
+ * @returns Object with wrapped stream and a promise that resolves to bytes delivered
+ */
+export function createByteCountingStream(
+  stream: ReadableStream<Uint8Array>
+): {
+  stream: ReadableStream<Uint8Array>;
+  byteCount: Promise<number>;
+} {
+  let totalBytes = 0;
+  let resolveByteCount: (count: number) => void;
+
+  const byteCountPromise = new Promise<number>((resolve) => {
+    resolveByteCount = resolve;
+  });
+
+  const reader = stream.getReader();
+
+  const countedStream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          resolveByteCount(totalBytes);
+          controller.close();
+          return;
+        }
+        totalBytes += value.byteLength;
+        controller.enqueue(value);
+      } catch (err) {
+        // Source stream errored - resolve with bytes counted so far
+        // This ensures usage tracking completes even on errors
+        resolveByteCount(totalBytes);
+        controller.error(err);
+      }
+    },
+    cancel() {
+      resolveByteCount(totalBytes);
+      // Return the promise to properly chain cancellation
+      return reader.cancel();
+    },
+  });
+
+  return {
+    stream: countedStream,
+    byteCount: byteCountPromise,
+  };
+}
+
+/**
  * Create a size-limited transform stream
  *
  * Wraps a ReadableStream and enforces a maximum size limit.
