@@ -136,7 +136,43 @@ export async function storeInCacheStream(
 ): Promise<void> {
   const cachedAt = new Date().toISOString();
 
-  await env.R2.put(cacheKey, body, {
+  // R2.put() requires streams with known length.
+  // Use FixedLengthStream when Content-Length is available.
+  // For chunked responses (no Content-Length), buffer the entire content.
+  let uploadBody: ReadableStream | ArrayBuffer;
+
+  if (contentLength !== null) {
+    // Wrap in FixedLengthStream for known-length streams
+    const { readable, writable } = new FixedLengthStream(contentLength);
+    body.pipeTo(writable).catch(() => {
+      // Stream error - will be caught by R2.put
+    });
+    uploadBody = readable;
+  } else {
+    // For unknown length (chunked), we must buffer
+    // This is less efficient but necessary for R2
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalLength = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      totalLength += value.byteLength;
+    }
+
+    // Combine chunks into single ArrayBuffer
+    const buffer = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      buffer.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    uploadBody = buffer.buffer;
+  }
+
+  await env.R2.put(cacheKey, uploadBody, {
     httpMetadata: {
       contentType: contentType,
       cacheControl: 'public, max-age=31536000, immutable',

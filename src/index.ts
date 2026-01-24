@@ -90,16 +90,12 @@ export default {
         return errorResponse('DELETE method not currently supported', 405);
       }
 
-      // Handle HEAD request
-      if (request.method === 'HEAD') {
-        addLog('HEAD request', 'Checking cache without download');
-        return await handleHeadRequest(env, parsed.cacheKey);
-      }
-
-      // Only GET requests beyond this point
-      if (request.method !== 'GET') {
+      // Only GET and HEAD requests beyond this point
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
         return errorResponse('Method not allowed', 405);
       }
+
+      const isHeadRequest = request.method === 'HEAD';
 
       // Check for Range header early - determines our cache strategy
       const rangeHeader = request.headers.get('Range');
@@ -168,7 +164,65 @@ export default {
         });
       }
 
-      // Check cache result
+      // Handle HEAD requests - only serve from cache, don't fetch from origin
+      // HEAD requests are used to check metadata without downloading the body
+      if (isHeadRequest) {
+        addLog('HEAD request', 'Checking cache metadata');
+
+        // Get cache metadata (if not already fetched above)
+        const headResult = cacheResult || await getCacheHead(env, parsed.cacheKey);
+
+        if (headResult) {
+          const cachedContentType = (headResult.httpMetadata?.contentType || '').toLowerCase();
+
+          // Validate cached content is supported media type
+          if (!isMediaContentType(cachedContentType)) {
+            // Invalid cached content - delete and redirect
+            ctx.waitUntil(env.R2.delete(parsed.cacheKey).catch(() => {}));
+            return new Response(null, {
+              status: 302,
+              headers: {
+                'Location': parsed.sourceUrl,
+                'Cache-Control': 'no-store, no-cache, must-revalidate',
+                'X-ImgPro-Status': 'redirect',
+                ...getCORSHeaders(),
+              },
+            });
+          }
+
+          // Return HEAD response with metadata
+          addLog('HEAD cache hit', `${headResult.size} bytes`);
+          return new Response(null, {
+            status: 200,
+            headers: {
+              'Content-Type': headResult.httpMetadata?.contentType || 'application/octet-stream',
+              'Content-Length': headResult.size.toString(),
+              'Accept-Ranges': 'bytes',
+              'ETag': headResult.etag,
+              'Last-Modified': headResult.uploaded.toUTCString(),
+              'Cache-Control': 'public, max-age=31536000, immutable',
+              'X-ImgPro-Status': 'hit',
+              'X-ImgPro-Cached-At': headResult.customMetadata?.cachedAt || '',
+              ...getCORSHeaders(),
+            },
+          });
+        }
+
+        // Not in cache - redirect to origin for HEAD
+        // We don't fetch from origin just to answer a HEAD request
+        addLog('HEAD cache miss', 'Redirecting to origin');
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': parsed.sourceUrl,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'X-ImgPro-Status': 'redirect',
+            ...getCORSHeaders(),
+          },
+        });
+      }
+
+      // Check cache result (GET requests only from here)
       if (cacheResult) {
         addLog('Cache HIT', parsed.cacheKey);
 
