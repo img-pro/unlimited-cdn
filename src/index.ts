@@ -27,7 +27,6 @@ import {
   getFromCache,
   getFromCacheWithRange,
   getCacheHead,
-  handleHeadRequest,
   handleConditionalRequest,
   storeInCacheStream,
 } from './cache';
@@ -90,16 +89,12 @@ export default {
         return errorResponse('DELETE method not currently supported', 405);
       }
 
-      // Handle HEAD request
-      if (request.method === 'HEAD') {
-        addLog('HEAD request', 'Checking cache without download');
-        return await handleHeadRequest(env, parsed.cacheKey);
-      }
-
-      // Only GET requests beyond this point
-      if (request.method !== 'GET') {
+      // Only GET and HEAD requests beyond this point
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
         return errorResponse('Method not allowed', 405);
       }
+
+      const isHeadRequest = request.method === 'HEAD';
 
       // Check for Range header early - determines our cache strategy
       const rangeHeader = request.headers.get('Range');
@@ -127,6 +122,7 @@ export default {
       const isFullFileRange = rangeHeader === 'bytes=0-';
 
       // Run validation and cache operations in parallel
+      // For HEAD requests: only fetch metadata (never full body)
       // For standard range requests: fetch HEAD (metadata) AND range data in parallel
       // For full-file ranges (bytes=0-): fetch full object (Safari video probe)
       // For other range requests: just HEAD (then fetch range after)
@@ -135,11 +131,12 @@ export default {
         validateOrigin(parsed.domain, env),
         parsed.forceReprocess
           ? Promise.resolve(null)
-          : (rangeHeader && !isFullFileRange)
-            ? getCacheHead(env, parsed.cacheKey)  // Partial range: get metadata only
-            : getFromCache(env, parsed.cacheKey), // Full request or bytes=0-: get full object
-        // For standard ranges, also fetch the range data in parallel
-        (parsed.forceReprocess || !isStandardRange)
+          : (isHeadRequest || (rangeHeader && !isFullFileRange))
+            ? getCacheHead(env, parsed.cacheKey)  // HEAD or partial range: metadata only
+            : getFromCache(env, parsed.cacheKey), // Full GET request or bytes=0-: get full object
+        // For standard ranges (GET only), also fetch the range data in parallel
+        // Skip for HEAD requests - they don't need the actual range data
+        (parsed.forceReprocess || isHeadRequest || !isStandardRange)
           ? Promise.resolve(null)
           : getFromCacheWithRange(env, parsed.cacheKey, {
               start: standardRangeStart!,
@@ -168,7 +165,80 @@ export default {
         });
       }
 
-      // Check cache result
+      // Handle HEAD requests - only serve from cache, don't fetch from origin
+      // HEAD requests are used to check metadata without downloading the body
+      if (isHeadRequest) {
+        addLog('HEAD request', 'Checking cache metadata');
+
+        // If forceReprocess is set, redirect to origin (consistent with GET behavior)
+        // We don't fetch the full file just for a HEAD request
+        if (parsed.forceReprocess) {
+          addLog('HEAD + forceReprocess', 'Redirecting to origin');
+          return new Response(null, {
+            status: 302,
+            headers: {
+              'Location': parsed.sourceUrl,
+              'Cache-Control': 'no-store, no-cache, must-revalidate',
+              'X-ImgPro-Status': 'redirect',
+              ...getCORSHeaders(),
+            },
+          });
+        }
+
+        // Get cache metadata (if not already fetched above)
+        const headResult = cacheResult || await getCacheHead(env, parsed.cacheKey);
+
+        if (headResult) {
+          const cachedContentType = (headResult.httpMetadata?.contentType || '').toLowerCase();
+
+          // Validate cached content is supported media type
+          if (!isMediaContentType(cachedContentType)) {
+            // Invalid cached content - delete and redirect
+            ctx.waitUntil(env.R2.delete(parsed.cacheKey).catch(() => {}));
+            return new Response(null, {
+              status: 302,
+              headers: {
+                'Location': parsed.sourceUrl,
+                'Cache-Control': 'no-store, no-cache, must-revalidate',
+                'X-ImgPro-Status': 'redirect',
+                ...getCORSHeaders(),
+              },
+            });
+          }
+
+          // Return HEAD response with metadata
+          addLog('HEAD cache hit', `${headResult.size} bytes`);
+          return new Response(null, {
+            status: 200,
+            headers: {
+              'Content-Type': headResult.httpMetadata?.contentType || 'application/octet-stream',
+              'Content-Length': headResult.size.toString(),
+              'Accept-Ranges': 'bytes',
+              'ETag': headResult.etag,
+              'Last-Modified': headResult.uploaded.toUTCString(),
+              'Cache-Control': 'public, max-age=31536000, immutable',
+              'X-ImgPro-Status': 'hit',
+              'X-ImgPro-Cached-At': headResult.customMetadata?.cachedAt || '',
+              ...getCORSHeaders(),
+            },
+          });
+        }
+
+        // Not in cache - redirect to origin for HEAD
+        // We don't fetch from origin just to answer a HEAD request
+        addLog('HEAD cache miss', 'Redirecting to origin');
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': parsed.sourceUrl,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'X-ImgPro-Status': 'redirect',
+            ...getCORSHeaders(),
+          },
+        });
+      }
+
+      // Check cache result (GET requests only from here)
       if (cacheResult) {
         addLog('Cache HIT', parsed.cacheKey);
 
@@ -366,6 +436,24 @@ export default {
       // Cache miss (or forced reprocess) - fetch from origin
       addLog('Cache MISS', `Fetching from origin: ${parsed.sourceUrl}`);
 
+      // IMPORTANT: For partial range requests on cache miss, redirect to origin
+      // We can only fetch the full file from origin, so we can't serve specific byte ranges.
+      // Lying about Content-Range (saying bytes 0-X when they asked for bytes Y-Z) breaks video players.
+      // Redirect lets the browser get the exact bytes from origin while we cache the full file in background.
+      if (rangeHeader && !isFullFileRange) {
+        addLog('Partial range on cache miss', `${rangeHeader} - redirecting to origin`);
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': parsed.sourceUrl,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'X-ImgPro-Status': 'redirect',
+            'X-ImgPro-Redirect-Reason': 'partial-range-cache-miss',
+            ...getCORSHeaders(),
+          },
+        });
+      }
+
       // Create redirect validator that checks against our allowlist
       const validateRedirect = async (finalUrl: string): Promise<boolean> => {
         const urlValidation = validateUrlForFetch(finalUrl);
@@ -504,19 +592,51 @@ export default {
       addLog('Storing in R2', 'streaming (background)');
 
       // Return streaming response to client
-      // Note: For cache miss, we serve full file - next request will hit cache and support ranges
+      // For Range requests with known size, return 206 to indicate range support
+      // This is critical for video players that probe with "Range: bytes=0-"
       addLog('Serving media', `streaming, ${contentType}`);
 
-      return new Response(responseStream, {
-        status: 200,
-        headers: {
-          'Content-Type': contentType,
-          ...(contentLength !== null ? { 'Content-Length': contentLength.toString() } : {}),
-          'Accept-Ranges': 'bytes',
-          'Cache-Control': 'public, max-age=31536000, immutable',
-          'X-ImgPro-Status': 'miss',
-          ...getCORSHeaders(),
-        },
+      // Determine if we should return 206 Partial Content
+      // Video players expect 206 with Content-Range to confirm range support
+      // For empty files (contentLength === 0), return 200 - no bytes to serve in a range
+      const shouldReturn206 = rangeHeader && contentLength !== null && contentLength > 0;
+      const status = shouldReturn206 ? 206 : 200;
+
+      // Build response headers
+      const responseHeaders: Record<string, string> = {
+        'Content-Type': contentType,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-ImgPro-Status': 'miss',
+        ...getCORSHeaders(),
+      };
+
+      if (contentLength !== null) {
+        responseHeaders['Content-Length'] = contentLength.toString();
+      }
+
+      // Add Content-Range header for 206 responses
+      // For "bytes=0-" probe, we serve the full file but indicate the range
+      if (shouldReturn206 && contentLength !== null) {
+        responseHeaders['Content-Range'] = `bytes 0-${contentLength - 1}/${contentLength}`;
+      }
+
+      // CRITICAL: Wrap response stream in FixedLengthStream when Content-Length is known
+      // tee()'d streams don't have a known length, causing Cloudflare Workers to strip
+      // the Content-Length header and use chunked encoding. This breaks video players
+      // that need Content-Length to calculate seek positions.
+      let finalResponseStream: ReadableStream<Uint8Array> = responseStream;
+      if (contentLength !== null) {
+        const { readable, writable } = new FixedLengthStream(contentLength);
+        responseStream.pipeTo(writable).catch(() => {
+          // Stream error - will be handled by Response
+        });
+        finalResponseStream = readable;
+      }
+
+      return new Response(finalResponseStream, {
+        status,
+        headers: responseHeaders,
       });
 
     } catch (error) {
