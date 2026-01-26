@@ -36,7 +36,7 @@ export function createHtmlViewer(options: HtmlViewerOptions): Response {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Bandwidth Saver - Debug Viewer</title>
+  <title>Unlimited CDN - Debug Viewer</title>
   <style>
     /* Dieter Rams / Braun Design Principles */
     * {
@@ -287,7 +287,7 @@ export function createHtmlViewer(options: HtmlViewerOptions): Response {
     <header>
       <div>
         <h1>Debug Viewer</h1>
-        <div class="subtitle">Bandwidth Saver CDN Worker · v${VERSION}</div>
+        <div class="subtitle">Unlimited CDN Worker · v${VERSION}</div>
       </div>
       <button class="delete-btn" id="deleteBtn" onclick="deleteImage()">Delete Image</button>
     </header>

@@ -7,11 +7,11 @@
 #   1. Copy this file: cp wrangler.toml.example wrangler.toml
 #   2. Replace ALL instances of "example.com" with your actual domain
 #   3. Replace YOUR_ACCOUNT_ID with your Cloudflare account ID
-#   4. Create R2 bucket: wrangler r2 bucket create bandwidth-saver-cache
+#   4. Create R2 bucket: wrangler r2 bucket create unlimited-cdn-cache
 #   5. Deploy: npm run deploy
 #   6. Add custom domain in Cloudflare dashboard (see README)
 
-name = "bandwidth-saver"
+name = "unlimited-cdn"
 main = "src/index.ts"
 compatibility_date = "2025-01-15"
 compatibility_flags = ["nodejs_compat"]
@@ -32,7 +32,7 @@ routes = [
 # R2 bucket for image caching (private - worker handles all access)
 [[r2_buckets]]
 binding = "R2"
-bucket_name = "bandwidth-saver-cache"
+bucket_name = "unlimited-cdn-cache"
 
 # =============================================================================
 # ORIGIN SERVERS - Where images are fetched FROM
