@@ -40,8 +40,8 @@ Works with **any origin server** that serves images over HTTPS:
 npm install -g wrangler
 wrangler login
 
-git clone https://github.com/img-pro/bandwidth-saver-worker.git
-cd bandwidth-saver-worker
+git clone https://github.com/img-pro/unlimited-cdn-worker.git
+cd unlimited-cdn-worker
 npm install
 
 cp wrangler.toml.example wrangler.toml
@@ -60,13 +60,13 @@ Edit `wrangler.toml`:
 ### 2. Create R2 Bucket and Deploy
 
 ```bash
-wrangler r2 bucket create bandwidth-saver-cache
+wrangler r2 bucket create unlimited-cdn-cache
 npm run deploy
 ```
 
 ### 3. Add Custom Domain
 
-1. **Cloudflare Dashboard → Workers & Pages → bandwidth-saver**
+1. **Cloudflare Dashboard → Workers & Pages → unlimited-cdn**
 2. **Settings → Domains & Routes → Add → Custom Domain**
 3. Enter your CDN domain (e.g., `cdn.example.com`)
 
@@ -118,10 +118,10 @@ How you do this depends on your stack—typically a middleware, helper function,
 
 ### WordPress
 
-Install the [Bandwidth Saver](https://wordpress.org/plugins/bandwidth-saver/) plugin for automatic URL rewriting:
+Install the [Unlimited CDN](https://wordpress.org/plugins/bandwidth-saver/) plugin for automatic URL rewriting:
 
-1. **Plugins → Add New** → Search "Bandwidth Saver"
-2. **Settings → Bandwidth Saver → Self-Host tab**
+1. **Plugins → Add New** → Search "Unlimited CDN"
+2. **Settings → Unlimited CDN → Self-Host tab**
 3. Enter your CDN domain and enable
 
 ### Next.js / Nuxt / React
@@ -240,9 +240,9 @@ npm run tail     # View production logs
 
 ## Links
 
-- [Bandwidth Saver WordPress Plugin](https://wordpress.org/plugins/bandwidth-saver/) — Automatic integration for WordPress
+- [Unlimited CDN WordPress Plugin](https://wordpress.org/plugins/bandwidth-saver/) — Automatic integration for WordPress
 - [img.pro](https://img.pro) — Managed service (no setup required)
-- [GitHub Issues](https://github.com/img-pro/bandwidth-saver-worker/issues)
+- [GitHub Issues](https://github.com/img-pro/unlimited-cdn-worker/issues)
 
 ## License
 

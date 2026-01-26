@@ -1,5 +1,5 @@
 {
-  "name": "bandwidth-saver-worker",
+  "name": "unlimited-cdn-worker",
   "version": "1.2.1",
   "description": "Self-hosted image CDN powered by Cloudflare Workers and R2. Zero egress fees.",
   "main": "src/index.ts",
