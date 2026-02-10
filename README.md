@@ -40,7 +40,7 @@ Works with **any origin server** that serves images over HTTPS:
 npm install -g wrangler
 wrangler login
 
-git clone https://github.com/img-pro/unlimited-cdn-worker.git
+git clone https://github.com/img-pro/unlimited-cdn.git
 cd unlimited-cdn-worker
 npm install
 
@@ -242,7 +242,7 @@ npm run tail     # View production logs
 
 - [Unlimited CDN WordPress Plugin](https://wordpress.org/plugins/bandwidth-saver/) — Automatic integration for WordPress
 - [img.pro](https://img.pro) — Managed service (no setup required)
-- [GitHub Issues](https://github.com/img-pro/unlimited-cdn-worker/issues)
+- [GitHub Issues](https://github.com/img-pro/unlimited-cdn/issues)
 
 ## License
 
