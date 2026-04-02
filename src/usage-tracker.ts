@@ -62,6 +62,7 @@ export class SiteUsageTracker implements DurableObject {
 	private cacheMisses: number = 0;
 	private d1Failures: number = 0;
 	private initialized: boolean = false;
+	private alarmRunning: boolean = false;
 
 	constructor(state: DurableObjectState, env: Env) {
 		this.state = state;
@@ -78,6 +79,9 @@ export class SiteUsageTracker implements DurableObject {
 			const existingAlarm = await this.state.storage.getAlarm();
 			if (!existingAlarm && this.env.BILLING_DB) {
 				await this.state.storage.setAlarm(Date.now() + 60000);
+				this.alarmRunning = true;
+			} else if (existingAlarm) {
+				this.alarmRunning = true;
 			}
 		});
 	}
@@ -141,6 +145,12 @@ export class SiteUsageTracker implements DurableObject {
 				await this.state.storage.put(Object.fromEntries(updates));
 			}
 
+			// Restart alarm if it went dormant (idle alarm exited without rescheduling)
+			if (!this.alarmRunning && this.env.BILLING_DB) {
+				await this.state.storage.setAlarm(Date.now() + 60000);
+				this.alarmRunning = true;
+			}
+
 			return new Response('OK', { status: 200 });
 		} catch (err) {
 			console.error('Usage tracker fetch error:', err);
@@ -174,9 +184,10 @@ export class SiteUsageTracker implements DurableObject {
 
 		const now = Math.floor(Date.now() / 1000);
 
-		// No activity since last flush — let DO go dormant (no alarm reschedule).
-		// The constructor will set a new alarm when the next request arrives.
+		// No activity since last flush — stop the alarm loop.
+		// fetch() will restart it when the next request arrives.
 		if (this.requests === 0) {
+			this.alarmRunning = false;
 			return;
 		}
 
