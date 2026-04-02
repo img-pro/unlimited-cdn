@@ -8,14 +8,15 @@
  *
  * Architecture:
  * - Worker sends metrics to DO via ctx.waitUntil (no blocking)
- * - DO accumulates counters in state.storage (persistent)
- * - Alarm triggers every 60s to flush to D1
+ * - DO accumulates counters in memory (not persisted per-request)
+ * - Alarm triggers every 60s to flush to D1 and persist counters
  * - Direct D1 access (no API calls, no API keys exposed)
+ * - Idle DOs (no traffic) stop their alarm and go dormant
  *
  * Durability:
- * - Counters persist in state.storage, surviving memory eviction
- * - DO can be evicted after ~10s of inactivity, but storage persists
- * - Alarm is guaranteed to fire even after eviction/re-hydration
+ * - Counters are in-memory between alarm flushes; at most 60s of data
+ *   can be lost if the DO evicts before the next alarm fires
+ * - Acceptable trade-off for usage analytics (not billing-critical)
  *
  * Scaling:
  * - Each site = one DO instance
@@ -126,7 +127,7 @@ export class SiteUsageTracker implements DurableObject {
 				updates.set(STORAGE_KEYS.DOMAIN, metrics.domain);
 			}
 
-			// Accumulate metrics (requests only, bandwidth tracking removed)
+			// Accumulate metrics in memory (persisted by alarm every 60s)
 			this.requests += 1;
 
 			if (metrics.cacheHit) {
@@ -135,12 +136,10 @@ export class SiteUsageTracker implements DurableObject {
 				this.cacheMisses += 1;
 			}
 
-			// Persist all counters atomically
-			updates.set(STORAGE_KEYS.REQUESTS, this.requests);
-			updates.set(STORAGE_KEYS.CACHE_HITS, this.cacheHits);
-			updates.set(STORAGE_KEYS.CACHE_MISSES, this.cacheMisses);
-
-			await this.state.storage.put(Object.fromEntries(updates));
+			// Only write identity on first request (one-time per DO instance)
+			if (updates.size > 0) {
+				await this.state.storage.put(Object.fromEntries(updates));
+			}
 
 			return new Response('OK', { status: 200 });
 		} catch (err) {
@@ -175,15 +174,9 @@ export class SiteUsageTracker implements DurableObject {
 
 		const now = Math.floor(Date.now() / 1000);
 
-		// Skip if no activity since last flush
+		// No activity since last flush — let DO go dormant (no alarm reschedule).
+		// The constructor will set a new alarm when the next request arrives.
 		if (this.requests === 0) {
-			// Reset alarm for next period
-			try {
-				await this.state.storage.setAlarm(Date.now() + 60000);
-			} catch (alarmErr) {
-				// Storage failing - log and hope next request triggers recovery
-				console.error('[UsageTracker] Failed to reschedule idle alarm:', alarmErr);
-			}
 			return;
 		}
 
