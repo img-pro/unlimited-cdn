@@ -8,14 +8,15 @@
  *
  * Architecture:
  * - Worker sends metrics to DO via ctx.waitUntil (no blocking)
- * - DO accumulates counters in state.storage (persistent)
- * - Alarm triggers every 60s to flush to D1
+ * - DO accumulates counters in memory (not persisted per-request)
+ * - Alarm triggers every 60s to flush to D1 and persist counters
  * - Direct D1 access (no API calls, no API keys exposed)
+ * - Idle DOs (no traffic) stop their alarm and go dormant
  *
  * Durability:
- * - Counters persist in state.storage, surviving memory eviction
- * - DO can be evicted after ~10s of inactivity, but storage persists
- * - Alarm is guaranteed to fire even after eviction/re-hydration
+ * - Counters are in-memory between alarm flushes; at most 60s of data
+ *   can be lost if the DO evicts before the next alarm fires
+ * - Acceptable trade-off for usage analytics (not billing-critical)
  *
  * Scaling:
  * - Each site = one DO instance
@@ -61,6 +62,7 @@ export class SiteUsageTracker implements DurableObject {
 	private cacheMisses: number = 0;
 	private d1Failures: number = 0;
 	private initialized: boolean = false;
+	private alarmRunning: boolean = false;
 
 	constructor(state: DurableObjectState, env: Env) {
 		this.state = state;
@@ -77,6 +79,9 @@ export class SiteUsageTracker implements DurableObject {
 			const existingAlarm = await this.state.storage.getAlarm();
 			if (!existingAlarm && this.env.BILLING_DB) {
 				await this.state.storage.setAlarm(Date.now() + 60000);
+				this.alarmRunning = true;
+			} else if (existingAlarm) {
+				this.alarmRunning = true;
 			}
 		});
 	}
@@ -126,7 +131,7 @@ export class SiteUsageTracker implements DurableObject {
 				updates.set(STORAGE_KEYS.DOMAIN, metrics.domain);
 			}
 
-			// Accumulate metrics (requests only, bandwidth tracking removed)
+			// Accumulate metrics in memory (persisted by alarm every 60s)
 			this.requests += 1;
 
 			if (metrics.cacheHit) {
@@ -135,12 +140,16 @@ export class SiteUsageTracker implements DurableObject {
 				this.cacheMisses += 1;
 			}
 
-			// Persist all counters atomically
-			updates.set(STORAGE_KEYS.REQUESTS, this.requests);
-			updates.set(STORAGE_KEYS.CACHE_HITS, this.cacheHits);
-			updates.set(STORAGE_KEYS.CACHE_MISSES, this.cacheMisses);
+			// Only write identity on first request (one-time per DO instance)
+			if (updates.size > 0) {
+				await this.state.storage.put(Object.fromEntries(updates));
+			}
 
-			await this.state.storage.put(Object.fromEntries(updates));
+			// Restart alarm if it went dormant (idle alarm exited without rescheduling)
+			if (!this.alarmRunning && this.env.BILLING_DB) {
+				await this.state.storage.setAlarm(Date.now() + 60000);
+				this.alarmRunning = true;
+			}
 
 			return new Response('OK', { status: 200 });
 		} catch (err) {
@@ -175,15 +184,10 @@ export class SiteUsageTracker implements DurableObject {
 
 		const now = Math.floor(Date.now() / 1000);
 
-		// Skip if no activity since last flush
+		// No activity since last flush — stop the alarm loop.
+		// fetch() will restart it when the next request arrives.
 		if (this.requests === 0) {
-			// Reset alarm for next period
-			try {
-				await this.state.storage.setAlarm(Date.now() + 60000);
-			} catch (alarmErr) {
-				// Storage failing - log and hope next request triggers recovery
-				console.error('[UsageTracker] Failed to reschedule idle alarm:', alarmErr);
-			}
+			this.alarmRunning = false;
 			return;
 		}
 
@@ -265,22 +269,26 @@ export class SiteUsageTracker implements DurableObject {
 				// Don't increment d1Failures - D1 didn't fail
 				// Don't restore counters - they're correctly decremented in memory
 			} else {
-				// True D1 failure - track it and preserve counters for retry
+				// True D1 failure — persist counters so they survive eviction
 				try {
 					this.d1Failures += 1;
-					await this.state.storage.put(STORAGE_KEYS.D1_FAILURES, this.d1Failures);
+					await this.state.storage.put({
+						[STORAGE_KEYS.REQUESTS]: this.requests,
+						[STORAGE_KEYS.CACHE_HITS]: this.cacheHits,
+						[STORAGE_KEYS.CACHE_MISSES]: this.cacheMisses,
+						[STORAGE_KEYS.D1_FAILURES]: this.d1Failures,
+					});
 
 					console.error(`[UsageTracker] D1 write failed for ${flushDomain}:`, err, {
 						consecutiveFailures: this.d1Failures,
 						accumulatedRequests: this.requests,
 					});
 
-					// Alert if failure threshold exceeded (indicates persistent D1 issue)
 					if (this.d1Failures >= D1_FAILURE_ALERT_THRESHOLD) {
 						console.error(
 							`[UsageTracker] ALERT: ${this.d1Failures} consecutive D1 failures for site:${flushSiteId} (${flushDomain}). ` +
 							`Accumulated: ${this.requests} requests. ` +
-							`Data preserved in DO storage, will retry on next alarm.`
+							`Counters persisted to storage, will retry on next alarm.`
 						);
 					}
 				} catch (storageErr) {
@@ -295,8 +303,8 @@ export class SiteUsageTracker implements DurableObject {
 			try {
 				await this.state.storage.setAlarm(Date.now() + 60000);
 			} catch (alarmErr) {
-				// If we can't set alarm, storage is fundamentally broken
-				// Log and hope the next request to this DO triggers recovery
+				// setAlarm failed — mark dormant so fetch() can retry
+				this.alarmRunning = false;
 				console.error(`[UsageTracker] CRITICAL: Failed to reschedule alarm for ${flushDomain}:`, alarmErr);
 			}
 		}
